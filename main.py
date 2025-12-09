@@ -16,10 +16,10 @@ class VeterinaryAIAssistant:
     Integrates NLP analysis, database search, and question generation
     """
     
-    def __init__(self, db_path: str = "veterinary_database.db"):
-        """Initialize the assistant"""
+    def __init__(self, mongo_url: str = "mongodb://localhost:27017/", db_name: str = "veterinary_ai_db"):
+        """Initialize the assistant with MongoDB connection"""
         self.analyzer = VeterinaryNLPAnalyzer()
-        self.db = VeterinaryDatabase(db_path)
+        self.db = VeterinaryDatabase(mongo_url=mongo_url, db_name=db_name)
         self.question_generator = FollowUpQuestionGenerator(self.db)
         self.analysis_history = []
     
