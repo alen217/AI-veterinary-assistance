@@ -25,7 +25,7 @@ An intelligent veterinary assistant system that analyzes patient descriptions, i
 
 ### Prerequisites
 
-1. **MongoDB** - Install locally or use [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) (free tier available)
+1. **MongoDB Atlas** - Free cloud database at [MongoDB Atlas](https://www.mongodb.com/cloud/atlas)
 2. **Python 3.7+**
 
 ### Installation
@@ -38,21 +38,15 @@ cd AI-veterinary-assistance
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Start MongoDB (if using local installation)
-# Windows:
-net start MongoDB
+# 3. Set up MongoDB Atlas (Free)
+# - Go to https://www.mongodb.com/cloud/atlas
+# - Create a free cluster
+# - Get your connection string
+# - Copy .env.example to .env
+# - Add your connection string to .env
 
-# Mac:
-brew services start mongodb-community
-
-# Linux:
-sudo systemctl start mongod
-
-# 4. Verify setup
-python setup_mongodb.py
-
-# 5. Run examples
-python mongodb_examples.py
+# 4. Run examples
+python example_with_env.py
 ```
 
 ## Usage
@@ -62,8 +56,9 @@ python mongodb_examples.py
 ```python
 from main import VeterinaryAIAssistant
 
-# Create assistant (uses local MongoDB by default)
-with VeterinaryAIAssistant() as assistant:
+# Create assistant with MongoDB Atlas
+mongo_url = "mongodb+srv://user:pass@cluster.mongodb.net/veterinary_ai_db"
+with VeterinaryAIAssistant(mongo_url=mongo_url) as assistant:
     # Analyze patient
     patient_text = """
     My 5-year-old golden retriever has been vomiting and has diarrhea 
