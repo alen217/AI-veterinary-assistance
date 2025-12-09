@@ -1,0 +1,77 @@
+{
+  "patient_info": {
+    "animal_type": "dog",
+    "age": null,
+    "breed": null,
+    "gender": null,
+    "weight": null
+  },
+  "symptoms": [
+    {
+      "symptom": "redness_eye",
+      "duration": "3 days",
+      "severity": "mild",
+      "frequency": null
+    },
+    {
+      "symptom": "swelling",
+      "duration": "3 days",
+      "severity": "mild",
+      "frequency": null
+    }
+  ],
+  "database_matches": [
+    {
+      "name": "Otitis",
+      "scientific_name": "Ear Inflammation",
+      "confidence": 0.3333333333333333,
+      "symptom_matches": 1,
+      "description": "Infection or inflammation of the ear canal, commonly caused by bacteria, yeast, or mites.",
+      "treatment": "Ear cleaning, topical antibiotics/antifungals, anti-inflammatory drops",
+      "prevention": "Regular ear cleaning, treat underlying allergies, moisture control",
+      "severity": "mild",
+      "affected_species": [
+        "dog",
+        "cat",
+        "rabbit"
+      ]
+    },
+    {
+      "name": "Conjunctivitis",
+      "scientific_name": "Eye Inflammation",
+      "confidence": 0.8500000000000001,
+      "symptom_matches": 1,
+      "description": "Inflammation of the conjunctiva (pink tissue around the eye) from infection or irritation.",
+      "treatment": "Topical antibiotics, saline drops, anti-inflammatory drops, treat underlying cause",
+      "prevention": "Keep eyes clean, avoid irritants, treat respiratory infections",
+      "severity": "mild",
+      "affected_species": [
+        "dog",
+        "cat",
+        "bird"
+      ]
+    }
+  ],
+  "recommendations": {
+    "urgency": "MODERATE - Schedule veterinary appointment within 24-48 hours",
+    "recommended_actions": [
+      "Schedule veterinary appointment for professional diagnosis",
+      "Keep detailed notes of symptoms, duration, and any triggers"
+    ],
+    "important_notes": [
+      "Species: dog",
+      "Symptoms lasting several days - may indicate systemic issue"
+    ],
+    "when_to_seek_immediate_care": [
+      "Severe difficulty breathing or gasping for air",
+      "Unconsciousness or inability to stand",
+      "Uncontrollable seizures or convulsions",
+      "Severe bleeding or wound not stopping after 5-10 minutes",
+      "Signs of extreme pain or distress",
+      "Inability to urinate or defecate for more than 24 hours",
+      "Severe abdominal swelling or pain",
+      "Ingestion of toxic substances"
+    ]
+  },
+  "questions_count": 8
+}
