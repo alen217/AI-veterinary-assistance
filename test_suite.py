@@ -54,10 +54,10 @@ def test_nlp_analyzer():
 def test_database():
     """Test the veterinary database"""
     print("\n" + "="*80)
-    print("TEST 2: VETERINARY DATABASE")
+    print("TEST 2: VETERINARY DATABASE (MongoDB)")
     print("="*80)
     
-    db = VeterinaryDatabase()
+    db = VeterinaryDatabase()  # Uses default MongoDB connection
     
     # Test 1: Search by symptoms
     print("\n[Search by Symptoms: 'vomiting' and 'diarrhea']")

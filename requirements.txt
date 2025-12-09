@@ -1,5 +1,5 @@
 # Core dependencies
-sqlite3>=3.0  # Usually included with Python
+pymongo>=4.0  # MongoDB driver
 
 # NLP and text processing (optional but recommended)
 spacy>=3.0
