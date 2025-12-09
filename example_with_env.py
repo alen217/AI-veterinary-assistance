@@ -10,8 +10,9 @@ from main import VeterinaryAIAssistant
 # Load environment variables from .env file
 load_dotenv()
 
-# Get MongoDB configuration
-mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017/")
+# Get MongoDB configuration from .env file
+# Default is MongoDB Atlas - update your .env file with your connection string
+mongo_url = os.getenv("MONGO_URL", "mongodb+srv://user:pass@cluster.mongodb.net/veterinary_ai_db")
 mongo_db_name = os.getenv("MONGO_DB_NAME", "veterinary_ai_db")
 
 print(f"Connecting to MongoDB...")
