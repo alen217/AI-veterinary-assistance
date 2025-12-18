@@ -97,7 +97,7 @@ class VeterinaryNLPAnalyzer:
         """Load comprehensive veterinary symptoms dictionary"""
         return {
             # Gastrointestinal symptoms
-            "vomiting": ["vomit", "vomiting", "threw up", "regurgitation"],
+            "vomiting": ["vomit", "vomiting", "threw up", "regurgitation","omiting"],
             "diarrhea": ["diarrhea", "diarrhoea", "loose stool", "runs", "soft stool"],
             "constipation": ["constipated", "constipation", "hard stool", "straining"],
             "loss_of_appetite": ["loss of appetite", "anorexia", "not eating", "refusing food", "inappetence"],
