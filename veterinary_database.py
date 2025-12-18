@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError
 from bson import ObjectId
@@ -101,6 +101,7 @@ class VeterinaryDatabase:
         self.treatments = self.db["treatments"]
         self.users = self.db["users"]
         self.symptoms = self.db["symptoms"]
+        self.analysis_history = self.db["analysis_history"]
         
         # Create indexes
         self.diseases.create_index("name", unique=True)
@@ -113,8 +114,54 @@ class VeterinaryDatabase:
 
         self.symptoms.create_index("key", unique=True)
         self.symptoms.create_index("system")
+
+        self.analysis_history.create_index("username")
+        self.analysis_history.create_index("created_at")
+        self.analysis_history.create_index([("username", 1), ("created_at", -1)])
         
         self._populate_default_data()
+
+    # ---------------------------------------------------------------------
+    # Analysis History
+    # ---------------------------------------------------------------------
+
+    def save_analysis_history(self, username: str, analysis_doc: Dict) -> str:
+        """Persist an analysis for a given user.
+
+        `analysis_doc` must be JSON/MongoDB safe (no custom Python objects).
+        Returns inserted document id as string.
+        """
+        username = (username or "").strip()
+        if not username:
+            raise ValueError("username is required")
+
+        doc = {
+            "username": username,
+            "created_at": datetime.now(timezone.utc),
+            **analysis_doc,
+        }
+        inserted = self.analysis_history.insert_one(doc)
+        return str(inserted.inserted_id)
+
+    def get_user_analysis_history(self, username: str, limit: int = 50) -> List[Dict]:
+        """Return most recent analyses for a user (newest first)."""
+        username = (username or "").strip()
+        if not username:
+            return []
+
+        cursor = (
+            self.analysis_history.find({"username": username})
+            .sort("created_at", -1)
+            .limit(max(1, int(limit)))
+        )
+
+        results: List[Dict] = []
+        for d in cursor:
+            d["_id"] = str(d.get("_id"))
+            created = d.get("created_at")
+            d["created_at"] = created.isoformat() if hasattr(created, "isoformat") else created
+            results.append(d)
+        return results
 
     # ---------------------------------------------------------------------
     # Users / Auth

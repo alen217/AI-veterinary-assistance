@@ -25,19 +25,32 @@ class VeterinaryAIAssistant:
     Integrates NLP analysis, database search, and question generation
     """
     
-    def __init__(self, mongo_url: str = "", db_name: str = ""):
+    def __init__(
+        self,
+        mongo_url: str = "",
+        db_name: str = "",
+        db: Optional[VeterinaryDatabase] = None,
+    ):
         """Initialize the assistant with MongoDB connection.
 
         If parameters are empty, falls back to `MONGO_URL` / `MONGO_DB_NAME` from `.env`.
         """
         self.analyzer = VeterinaryNLPAnalyzer()
-        resolved_mongo_url = mongo_url or os.getenv("MONGO_URL", "mongodb://localhost:27017/")
-        resolved_db_name = db_name or os.getenv("MONGO_DB_NAME", "veterinary_ai_db")
-        self.db = VeterinaryDatabase(mongo_url=resolved_mongo_url, db_name=resolved_db_name)
+        if db is not None:
+            self.db = db
+        else:
+            resolved_mongo_url = mongo_url or os.getenv("MONGO_URL", "mongodb://localhost:27017/")
+            resolved_db_name = db_name or os.getenv("MONGO_DB_NAME", "veterinary_ai_db")
+            self.db = VeterinaryDatabase(mongo_url=resolved_mongo_url, db_name=resolved_db_name)
         self.question_generator = FollowUpQuestionGenerator(self.db)
         self.analysis_history = []
     
-    def analyze_patient_text(self, patient_text: str, generate_questions: bool = True) -> Dict:
+    def analyze_patient_text(
+        self,
+        patient_text: str,
+        generate_questions: bool = True,
+        username: Optional[str] = None,
+    ) -> Dict:
         """
         Complete analysis of patient text
         
@@ -73,9 +86,64 @@ class VeterinaryAIAssistant:
             "follow_up_questions": questions,
             "recommendations": self._generate_recommendations(analysis, related_diseases)
         }
+
+        # Persist per-client history (optional)
+        if username:
+            try:
+                analysis_doc = self._serialize_for_history(patient_text, result)
+                self.db.save_analysis_history(username=username, analysis_doc=analysis_doc)
+            except Exception:
+                # Do not break analysis flow if history persistence fails
+                pass
         
         self.analysis_history.append(result)
         return result
+
+    @staticmethod
+    def _serialize_for_history(patient_text: str, result: Dict) -> Dict:
+        """Convert an analysis result into a MongoDB-safe document."""
+        analysis = result.get("patient_analysis")
+        recommendations = result.get("recommendations") or {}
+        matches = result.get("database_matches") or []
+        questions = result.get("follow_up_questions") or []
+
+        # Dataclasses from NLP / FollowUpQuestion
+        patient_info = getattr(analysis, "patient_info", None)
+        symptoms = getattr(analysis, "symptoms", None)
+        suspected = getattr(analysis, "suspected_diseases", None)
+        key_phrases = getattr(analysis, "key_phrases", None)
+
+        def to_dict(obj):
+            try:
+                from dataclasses import is_dataclass, asdict
+
+                if is_dataclass(obj):
+                    return asdict(obj)
+            except Exception:
+                pass
+            return obj
+
+        top_diseases = []
+        for d in matches[:3]:
+            name = d.get("name") if isinstance(d, dict) else None
+            severity = d.get("severity") if isinstance(d, dict) else None
+            if name:
+                top_diseases.append({"name": name, "severity": severity})
+
+        return {
+            "patient_text": patient_text,
+            "patient_info": to_dict(patient_info) if patient_info else None,
+            "symptoms": [to_dict(s) for s in (symptoms or [])],
+            "suspected_diseases": [to_dict(d) for d in (suspected or [])],
+            "key_phrases": list(key_phrases or []),
+            "database_matches": matches,
+            "follow_up_questions": [to_dict(q) for q in questions],
+            "recommendations": recommendations,
+            "summary": {
+                "urgency": recommendations.get("urgency"),
+                "top_diseases": top_diseases,
+            },
+        }
     
     def _search_for_related_diseases(self, analysis: AnalysisResult) -> List[Dict]:
         """Search database for diseases matching the symptoms"""
