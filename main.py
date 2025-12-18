@@ -5,9 +5,14 @@ Orchestrates patient text analysis, database searching, and follow-up question g
 
 from typing import Optional, Dict, List
 import json
+import os
+from dotenv import load_dotenv
 from nlp_patient_analyzer import VeterinaryNLPAnalyzer, AnalysisResult
 from veterinary_database import VeterinaryDatabase
 from follow_up_questions import FollowUpQuestionGenerator, FollowUpQuestion
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class VeterinaryAIAssistant:
@@ -16,10 +21,15 @@ class VeterinaryAIAssistant:
     Integrates NLP analysis, database search, and question generation
     """
     
-    def __init__(self, mongo_url: str = "mongodb://localhost:27017/", db_name: str = "veterinary_ai_db"):
-        """Initialize the assistant with MongoDB connection"""
+    def __init__(self, mongo_url: str = "", db_name: str = ""):
+        """Initialize the assistant with MongoDB connection.
+
+        If parameters are empty, falls back to `MONGO_URL` / `MONGO_DB_NAME` from `.env`.
+        """
         self.analyzer = VeterinaryNLPAnalyzer()
-        self.db = VeterinaryDatabase(mongo_url=mongo_url, db_name=db_name)
+        resolved_mongo_url = mongo_url or os.getenv("MONGO_URL", "mongodb://localhost:27017/")
+        resolved_db_name = db_name or os.getenv("MONGO_DB_NAME", "veterinary_ai_db")
+        self.db = VeterinaryDatabase(mongo_url=resolved_mongo_url, db_name=resolved_db_name)
         self.question_generator = FollowUpQuestionGenerator(self.db)
         self.analysis_history = []
     
@@ -332,7 +342,11 @@ def interactive_session():
     print("This system analyzes patient descriptions to extract disease and symptom")
     print("information, searches a veterinary database, and generates follow-up questions.\n")
     
-    with VeterinaryAIAssistant() as assistant:
+    # Get MongoDB connection details from environment
+    mongo_url = os.getenv('MONGO_URL', 'mongodb://localhost:27017/')
+    db_name = os.getenv('MONGO_DB_NAME', 'veterinary_ai_db')
+    
+    with VeterinaryAIAssistant(mongo_url=mongo_url, db_name=db_name) as assistant:
         while True:
             print("\nOptions:")
             print("  1. Analyze patient text")
@@ -385,11 +399,15 @@ def interactive_session():
 if __name__ == "__main__":
     import sys
     
+    # Get MongoDB connection details from environment
+    mongo_url = os.getenv('MONGO_URL', 'mongodb://localhost:27017/')
+    db_name = os.getenv('MONGO_DB_NAME', 'veterinary_ai_db')
+    
     if len(sys.argv) > 1:
         # Command line mode - analyze provided text
         patient_text = " ".join(sys.argv[1:])
         
-        with VeterinaryAIAssistant() as assistant:
+        with VeterinaryAIAssistant(mongo_url=mongo_url, db_name=db_name) as assistant:
             result = assistant.analyze_patient_text(patient_text)
             print(assistant.generate_report(result))
     else:
