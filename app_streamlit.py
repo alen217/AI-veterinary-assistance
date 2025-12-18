@@ -20,7 +20,30 @@ load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
 
 @st.cache_resource
 def get_db() -> VeterinaryDatabase:
-    return VeterinaryDatabase()
+    try:
+        return VeterinaryDatabase()
+    except Exception as exc:
+        mongo_url = os.getenv("MONGO_URL", "").strip()
+        is_missing = not mongo_url
+        is_local = mongo_url.startswith("mongodb://localhost") or mongo_url.startswith("mongodb://127.0.0.1")
+
+        st.error("Database connection failed. The app cannot start without MongoDB.")
+        if is_missing:
+            st.info(
+                "`MONGO_URL` is not set. On this computer, create a `.env` file (copy `.env.example` → `.env`) "
+                "and set `MONGO_URL` to your MongoDB Atlas connection string."
+            )
+        elif is_local:
+            st.info(
+                "`MONGO_URL` is set to a local MongoDB (`localhost`), but MongoDB is not running on this computer. "
+                "Either start a local MongoDB service or switch `MONGO_URL` to MongoDB Atlas in your `.env`."
+            )
+        else:
+            st.info(
+                "If you're using MongoDB Atlas, make sure the computer's IP is allowed in Atlas (Network Access allowlist)."
+            )
+        st.code(str(exc))
+        st.stop()
 
 # Configure page
 st.set_page_config(
