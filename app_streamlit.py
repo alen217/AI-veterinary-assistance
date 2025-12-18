@@ -5,15 +5,17 @@ Features: Dark Theme, Authentication, Admin Panel, User Management
 
 import streamlit as st
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 import json
 from pathlib import Path
 from main import VeterinaryAIAssistant
 from veterinary_database import VeterinaryDatabase
 
-# Load environment variables
-load_dotenv()
+# Load environment variables.
+# This is robust to different working directories (common on other computers/launch methods).
+_DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
+load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
 
 
 @st.cache_resource

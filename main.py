@@ -6,13 +6,17 @@ Orchestrates patient text analysis, database searching, and follow-up question g
 from typing import Optional, Dict, List
 import json
 import os
-from dotenv import load_dotenv
+from pathlib import Path
+
+from dotenv import load_dotenv, find_dotenv
 from nlp_patient_analyzer import VeterinaryNLPAnalyzer, AnalysisResult
 from veterinary_database import VeterinaryDatabase
 from follow_up_questions import FollowUpQuestionGenerator, FollowUpQuestion
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file.
+# This is robust to different working directories (e.g., running from another folder).
+_DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
+load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
 
 
 class VeterinaryAIAssistant:
