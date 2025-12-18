@@ -6,10 +6,12 @@ MongoDB Implementation
 
 import json
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError
 from bson import ObjectId
 
 try:
@@ -63,10 +65,12 @@ class VeterinaryDatabase:
         environment variables `MONGO_URL` and `MONGO_DB_NAME` (if available).
         """
         # Best-effort dotenv load (keeps library usable even if python-dotenv isn't installed)
+        # Uses a robust lookup so running from other working directories still works.
         try:  # pragma: no cover
-            from dotenv import load_dotenv  # type: ignore
+            from dotenv import load_dotenv, find_dotenv  # type: ignore
 
-            load_dotenv()
+            dotenv_path = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
+            load_dotenv(dotenv_path=dotenv_path, override=False)
         except Exception:
             pass
 
@@ -75,6 +79,22 @@ class VeterinaryDatabase:
 
         self.client = MongoClient(resolved_mongo_url, serverSelectionTimeoutMS=server_selection_timeout_ms)
         self.db = self.client[resolved_db_name]
+
+        # Fail fast with a clear message (especially when a machine accidentally falls back to localhost).
+        try:
+            self.client.admin.command("ping")
+        except Exception as exc:
+            is_local_default = any(host in resolved_mongo_url for host in ("localhost", "127.0.0.1", "mongodb://localhost"))
+            hint = ""
+            if is_local_default:
+                hint = (
+                    "\n\nIt looks like you're trying to connect to a local MongoDB instance, but it's not running on this computer. "
+                    "If you intended to use MongoDB Atlas, set MONGO_URL in a .env file (copy .env.example -> .env) "
+                    "or as an environment variable."
+                )
+            raise RuntimeError(
+                f"MongoDB connection failed for URL={resolved_mongo_url!r}, DB={resolved_db_name!r}." + hint
+            ) from exc
         
         # Collections
         self.diseases = self.db["diseases"]
