@@ -5,10 +5,17 @@ MongoDB Implementation
 """
 
 import json
+import os
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from pymongo import MongoClient
 from bson import ObjectId
+
+try:
+    import bcrypt  # type: ignore
+except Exception:  # pragma: no cover
+    bcrypt = None
 
 
 @dataclass
@@ -44,21 +51,116 @@ class VeterinaryDatabase:
     Database for storing and retrieving veterinary information using MongoDB
     """
     
-    def __init__(self, mongo_url: str = "mongodb://localhost:27017/", db_name: str = "veterinary_ai_db"):
-        """Initialize MongoDB connection"""
-        self.client = MongoClient(mongo_url)
-        self.db = self.client[db_name]
+    def __init__(
+        self,
+        mongo_url: Optional[str] = None,
+        db_name: Optional[str] = None,
+        server_selection_timeout_ms: int = 8000,
+    ):
+        """Initialize MongoDB connection.
+
+        If `mongo_url` or `db_name` are not provided, values are read from
+        environment variables `MONGO_URL` and `MONGO_DB_NAME` (if available).
+        """
+        # Best-effort dotenv load (keeps library usable even if python-dotenv isn't installed)
+        try:  # pragma: no cover
+            from dotenv import load_dotenv  # type: ignore
+
+            load_dotenv()
+        except Exception:
+            pass
+
+        resolved_mongo_url = mongo_url or os.getenv("MONGO_URL") or "mongodb://localhost:27017/"
+        resolved_db_name = db_name or os.getenv("MONGO_DB_NAME") or "veterinary_ai_db"
+
+        self.client = MongoClient(resolved_mongo_url, serverSelectionTimeoutMS=server_selection_timeout_ms)
+        self.db = self.client[resolved_db_name]
         
         # Collections
         self.diseases = self.db["diseases"]
         self.treatments = self.db["treatments"]
+        self.users = self.db["users"]
+        self.symptoms = self.db["symptoms"]
         
         # Create indexes
         self.diseases.create_index("name", unique=True)
         self.diseases.create_index("common_symptoms")
         self.diseases.create_index("severity")
+
+        self.users.create_index("username", unique=True)
+        self.users.create_index("role")
+        self.users.create_index("created_at")
+
+        self.symptoms.create_index("key", unique=True)
+        self.symptoms.create_index("system")
         
         self._populate_default_data()
+
+    # ---------------------------------------------------------------------
+    # Users / Auth
+    # ---------------------------------------------------------------------
+
+    def _require_bcrypt(self):
+        if bcrypt is None:
+            raise RuntimeError("bcrypt is required for user authentication. Install with: pip install bcrypt")
+
+    def create_user(self, username: str, password: str, role: str = "user") -> bool:
+        """Create a user in MongoDB.
+
+        Returns False if the username already exists.
+        """
+        self._require_bcrypt()
+        username = username.strip()
+        role = role.strip() or "user"
+        if not username:
+            raise ValueError("username is required")
+
+        existing = self.users.find_one({"username": username})
+        if existing:
+            return False
+
+        password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+        self.users.insert_one(
+            {
+                "username": username,
+                "password_hash": password_hash,
+                "role": role,
+                "created_at": datetime.now(timezone.utc),
+                "last_login_at": None,
+            }
+        )
+        return True
+
+    def verify_user(self, username: str, password: str) -> Optional[Dict]:
+        """Verify a username/password. Returns the user document (without password_hash) on success."""
+        self._require_bcrypt()
+        user = self.users.find_one({"username": username})
+        if not user:
+            return None
+        stored = user.get("password_hash")
+        if not stored:
+            return None
+
+        ok = bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8"))
+        if not ok:
+            return None
+
+        self.users.update_one({"_id": user["_id"]}, {"$set": {"last_login_at": datetime.now(timezone.utc)}})
+        user.pop("password_hash", None)
+        return user
+
+    def ensure_default_users(self):
+        """Ensure default admin/user exist (values from env; safe for demos)."""
+        admin_username = os.getenv("ADMIN_USERNAME", "admin")
+        admin_password = os.getenv("ADMIN_PASSWORD", "admin123")
+        user_username = os.getenv("DEFAULT_USER_USERNAME", "user")
+        user_password = os.getenv("DEFAULT_USER_PASSWORD", "user123")
+
+        # Only create if missing
+        if not self.users.find_one({"username": admin_username}):
+            self.create_user(admin_username, admin_password, role="admin")
+        if not self.users.find_one({"username": user_username}):
+            self.create_user(user_username, user_password, role="user")
     
     def _populate_default_data(self):
         """Populate database with default veterinary information"""
@@ -245,6 +347,10 @@ class VeterinaryDatabase:
     def get_all_diseases(self) -> List[Disease]:
         """Get all diseases in database"""
         return [self._doc_to_disease(doc) for doc in self.diseases.find()]
+
+    def list_diseases(self, limit: int = 50) -> List[Disease]:
+        """List diseases (convenience helper)."""
+        return [self._doc_to_disease(doc) for doc in self.diseases.find().limit(int(limit))]
     
     def _doc_to_disease(self, doc: Dict) -> Disease:
         """Convert MongoDB document to Disease object"""
