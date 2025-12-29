@@ -5,20 +5,45 @@ Features: Dark Theme, Authentication, Admin Panel, User Management
 
 import streamlit as st
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 import json
 from pathlib import Path
 from main import VeterinaryAIAssistant
 from veterinary_database import VeterinaryDatabase
 
-# Load environment variables
-load_dotenv()
+# Load environment variables.
+# This is robust to different working directories (common on other computers/launch methods).
+_DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
+load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
 
 
 @st.cache_resource
 def get_db() -> VeterinaryDatabase:
-    return VeterinaryDatabase()
+    try:
+        return VeterinaryDatabase()
+    except Exception as exc:
+        mongo_url = os.getenv("MONGO_URL", "").strip()
+        is_missing = not mongo_url
+        is_local = mongo_url.startswith("mongodb://localhost") or mongo_url.startswith("mongodb://127.0.0.1")
+
+        st.error("Database connection failed. The app cannot start without MongoDB.")
+        if is_missing:
+            st.info(
+                "`MONGO_URL` is not set. On this computer, create a `.env` file (copy `.env.example` → `.env`) "
+                "and set `MONGO_URL` to your MongoDB Atlas connection string."
+            )
+        elif is_local:
+            st.info(
+                "`MONGO_URL` is set to a local MongoDB (`localhost`), but MongoDB is not running on this computer. "
+                "Either start a local MongoDB service or switch `MONGO_URL` to MongoDB Atlas in your `.env`."
+            )
+        else:
+            st.info(
+                "If you're using MongoDB Atlas, make sure the computer's IP is allowed in Atlas (Network Access allowlist)."
+            )
+        st.code(str(exc))
+        st.stop()
 
 # Configure page
 st.set_page_config(
@@ -467,7 +492,8 @@ def show_home_page():
         db = get_db()
         
         disease_count = db.diseases.count_documents({})
-        analysis_count = len(st.session_state.analysis_history)
+        # Per-user analysis history is stored in MongoDB
+        analysis_count = db.analysis_history.count_documents({"username": st.session_state.username})
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -561,18 +587,22 @@ def show_diagnosis_page():
     if analyze_button and patient_text:
         with st.spinner("🔄 Analyzing patient data..."):
             try:
-                mongo_url = os.getenv('MONGO_URL')
-                db_name = os.getenv('MONGO_DB_NAME', 'veterinary_ai_db')
-                
-                assistant = VeterinaryAIAssistant(mongo_url=mongo_url, db_name=db_name)
-                result = assistant.analyze_patient_text(patient_text, generate_questions=generate_questions)
-                
-                # Save to history
-                st.session_state.analysis_history.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "patient_text": patient_text,
-                    "result": result
-                })
+                db = get_db()
+                assistant = VeterinaryAIAssistant(db=db)
+                result = assistant.analyze_patient_text(
+                    patient_text,
+                    generate_questions=generate_questions,
+                    username=st.session_state.username,
+                )
+
+                # Keep a lightweight in-session cache (optional)
+                st.session_state.analysis_history.append(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "patient_text": patient_text,
+                        "result": result,
+                    }
+                )
                 
                 # Display results
                 st.success("✅ Analysis Complete!")
@@ -716,23 +746,41 @@ def show_database_page():
 # History page
 def show_history_page():
     st.markdown("## 📊 Analysis History")
-    
-    if not st.session_state.analysis_history:
-        st.info("No analysis history yet. Perform a diagnosis to see results here.")
+
+    try:
+        db = get_db()
+        records = db.get_user_analysis_history(st.session_state.username, limit=50)
+    except Exception as e:
+        st.error(f"❌ Could not load history from database: {e}")
+        records = []
+
+    if not records:
+        st.info("No analysis history yet for this user. Perform a diagnosis to see results here.")
         return
-    
-    st.markdown(f"**Total Analyses:** {len(st.session_state.analysis_history)}")
-    
-    for idx, entry in enumerate(reversed(st.session_state.analysis_history), 1):
-        with st.expander(f"Analysis #{len(st.session_state.analysis_history) - idx + 1} - {entry['timestamp'][:19]}"):
+
+    st.markdown(f"**Total Analyses:** {len(records)}")
+
+    for idx, rec in enumerate(records, 1):
+        created_at = rec.get("created_at", "")
+        summary = rec.get("summary", {}) or {}
+        urgency = summary.get("urgency") or rec.get("recommendations", {}).get("urgency")
+
+        with st.expander(f"Analysis #{idx} - {str(created_at)[:19]}"):
             st.markdown("**Patient Description:**")
-            st.write(entry['patient_text'])
-            
+            st.write(rec.get("patient_text", ""))
+
             st.markdown("**Detected Diseases:**")
-            for disease in entry['result']['database_matches'][:3]:
-                st.write(f"- {disease['name']} ({disease['severity']})")
-            
-            st.markdown(f"**Urgency:** {entry['result']['recommendations']['urgency']}")
+            top = summary.get("top_diseases") or []
+            if top:
+                for d in top:
+                    st.write(f"- {d.get('name')} ({d.get('severity')})")
+            else:
+                for disease in (rec.get("database_matches") or [])[:3]:
+                    if isinstance(disease, dict):
+                        st.write(f"- {disease.get('name')} ({disease.get('severity')})")
+
+            if urgency:
+                st.markdown(f"**Urgency:** {urgency}")
 
 # Main application entry
 def main():

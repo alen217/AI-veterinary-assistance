@@ -6,10 +6,12 @@ MongoDB Implementation
 
 import json
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError
 from bson import ObjectId
 
 try:
@@ -63,10 +65,12 @@ class VeterinaryDatabase:
         environment variables `MONGO_URL` and `MONGO_DB_NAME` (if available).
         """
         # Best-effort dotenv load (keeps library usable even if python-dotenv isn't installed)
+        # Uses a robust lookup so running from other working directories still works.
         try:  # pragma: no cover
-            from dotenv import load_dotenv  # type: ignore
+            from dotenv import load_dotenv, find_dotenv  # type: ignore
 
-            load_dotenv()
+            dotenv_path = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
+            load_dotenv(dotenv_path=dotenv_path, override=False)
         except Exception:
             pass
 
@@ -75,12 +79,29 @@ class VeterinaryDatabase:
 
         self.client = MongoClient(resolved_mongo_url, serverSelectionTimeoutMS=server_selection_timeout_ms)
         self.db = self.client[resolved_db_name]
+
+        # Fail fast with a clear message (especially when a machine accidentally falls back to localhost).
+        try:
+            self.client.admin.command("ping")
+        except Exception as exc:
+            is_local_default = any(host in resolved_mongo_url for host in ("localhost", "127.0.0.1", "mongodb://localhost"))
+            hint = ""
+            if is_local_default:
+                hint = (
+                    "\n\nIt looks like you're trying to connect to a local MongoDB instance, but it's not running on this computer. "
+                    "If you intended to use MongoDB Atlas, set MONGO_URL in a .env file (copy .env.example -> .env) "
+                    "or as an environment variable."
+                )
+            raise RuntimeError(
+                f"MongoDB connection failed for URL={resolved_mongo_url!r}, DB={resolved_db_name!r}." + hint
+            ) from exc
         
         # Collections
         self.diseases = self.db["diseases"]
         self.treatments = self.db["treatments"]
         self.users = self.db["users"]
         self.symptoms = self.db["symptoms"]
+        self.analysis_history = self.db["analysis_history"]
         
         # Create indexes
         self.diseases.create_index("name", unique=True)
@@ -93,8 +114,54 @@ class VeterinaryDatabase:
 
         self.symptoms.create_index("key", unique=True)
         self.symptoms.create_index("system")
+
+        self.analysis_history.create_index("username")
+        self.analysis_history.create_index("created_at")
+        self.analysis_history.create_index([("username", 1), ("created_at", -1)])
         
         self._populate_default_data()
+
+    # ---------------------------------------------------------------------
+    # Analysis History
+    # ---------------------------------------------------------------------
+
+    def save_analysis_history(self, username: str, analysis_doc: Dict) -> str:
+        """Persist an analysis for a given user.
+
+        `analysis_doc` must be JSON/MongoDB safe (no custom Python objects).
+        Returns inserted document id as string.
+        """
+        username = (username or "").strip()
+        if not username:
+            raise ValueError("username is required")
+
+        doc = {
+            "username": username,
+            "created_at": datetime.now(timezone.utc),
+            **analysis_doc,
+        }
+        inserted = self.analysis_history.insert_one(doc)
+        return str(inserted.inserted_id)
+
+    def get_user_analysis_history(self, username: str, limit: int = 50) -> List[Dict]:
+        """Return most recent analyses for a user (newest first)."""
+        username = (username or "").strip()
+        if not username:
+            return []
+
+        cursor = (
+            self.analysis_history.find({"username": username})
+            .sort("created_at", -1)
+            .limit(max(1, int(limit)))
+        )
+
+        results: List[Dict] = []
+        for d in cursor:
+            d["_id"] = str(d.get("_id"))
+            created = d.get("created_at")
+            d["created_at"] = created.isoformat() if hasattr(created, "isoformat") else created
+            results.append(d)
+        return results
 
     # ---------------------------------------------------------------------
     # Users / Auth
