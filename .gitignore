@@ -1,1 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment
 .env
+
+# Training data
+ml_training/**/data/
+
+# Training outputs / checkpoints
+ml_training/**/outputs/
+
+# Runtime temp files
+temp_uploads/
+ava/runtime/**/uploads/
+
+ava/runtime/skin_disease/model.pth
