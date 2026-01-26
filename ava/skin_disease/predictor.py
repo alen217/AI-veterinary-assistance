@@ -19,8 +19,8 @@ transform = transforms.Compose([
 ])
 
 model = get_model(len(CLASSES))
-checkpoint = torch.load(MODEL_PATH, map_location=device)
-model.load_state_dict(checkpoint["model_state"])
+state_dict = torch.load(MODEL_PATH, map_location=device)
+model.load_state_dict(state_dict)
 model.to(device)
 model.eval()
 
