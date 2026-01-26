@@ -17,3 +17,6 @@ temp_uploads/
 ava/runtime/**/uploads/
 
 ava/runtime/skin_disease/model.pth
+ava/skin_disease/model.pth
+
+

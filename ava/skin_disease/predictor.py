@@ -3,7 +3,7 @@ from torchvision import transforms
 from PIL import Image
 import os
 
-from model import get_model
+from ava.skin_disease.model import get_model
 
 print("Predictor module loaded")
 
