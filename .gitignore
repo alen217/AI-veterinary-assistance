@@ -5,6 +5,7 @@ __pycache__/
 # Environment
 .env
 
+test_image.jpeg
 # Training data
 ml_training/**/data/
 
