@@ -4,8 +4,19 @@ __pycache__/
 
 # Environment
 .env
+<<<<<<< HEAD
 
 test_image.jpeg
+=======
+.venv/
+venv/
+
+# ML models (DO NOT COMMIT)
+*.pth
+*.pt
+*.ckpt
+
+>>>>>>> 9037393 (Add Veterinary AI Assistant application code)
 # Training data
 ml_training/**/data/
 
@@ -16,7 +27,12 @@ ml_training/**/outputs/
 temp_uploads/
 ava/runtime/**/uploads/
 
+<<<<<<< HEAD
 ava/runtime/skin_disease/model.pth
 ava/skin_disease/model.pth
+=======
+# Test artifacts
+test_image.jpeg
+>>>>>>> 9037393 (Add Veterinary AI Assistant application code)
 
 
