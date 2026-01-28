@@ -1,12 +1,83 @@
+from typing import List, Optional, Set
+from dataclasses import dataclass
+
+# ---------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------
+
+@dataclass
+class SymptomExtraction:
+    symptom: str
+    duration: Optional[str] = None
+    severity: Optional[str] = None
+    frequency: Optional[str] = None
+
+
+@dataclass
+class DiseaseExtraction:
+    disease_name: str
+    confidence: float
+
+
+@dataclass
+class FollowUpQuestion:
+    category: str
+    question: str
+    priority: int          # higher = more important
+    reasoning: str
+
+
+@dataclass
+class PatientInfo:
+    animal_type: Optional[str] = None
+    age: Optional[str] = None
+    breed: Optional[str] = None
+    gender: Optional[str] = None
+    weight: Optional[str] = None
+
+
+# ---------------------------------------------------------------------
+# Database placeholder
+# ---------------------------------------------------------------------
+
+class VeterinaryDatabase:
+    def search_by_name(self, name: str):
+        """
+        Returns a disease object with attributes:
+        - common_symptoms: List[str]
+        - causes: List[str]
+        """
+        return None   # replace with real implementation
+
+
+# ---------------------------------------------------------------------
+# Follow-up Question Generator
+# ---------------------------------------------------------------------
+
 class FollowUpQuestionGenerator:
     """
-    Generates disease-relevant, confidence-aware follow-up questions
+    Generates disease-relevant, confidence-aware follow-up questions.
+    Uses deterministic rules with optional AI-based priority boosting.
     """
-
 
     def __init__(self, db: Optional[VeterinaryDatabase] = None):
         self.db = db
 
+    # -----------------------------------------------------------------
+    # AI relevance scoring (SAFE STUB)
+    # -----------------------------------------------------------------
+    def _ai_score_question(self, question: str, context: dict) -> int:
+        """
+        Rates how relevant a follow-up question is (1–5) given patient context.
+        MUST NOT generate new questions or diagnoses.
+        Currently disabled (returns 0).
+        """
+        # Future: LLM call here
+        return 0
+
+    # -----------------------------------------------------------------
+    # Main entry point
+    # -----------------------------------------------------------------
     def generate_questions(
         self,
         patient_info: PatientInfo,
@@ -15,186 +86,214 @@ class FollowUpQuestionGenerator:
         max_questions: int = 8
     ) -> List[FollowUpQuestion]:
 
-        animal = patient_info.animal_type or "pet"
+        animal = (patient_info.animal_type or "pet").lower()
+
         context = {
-    "animal": animal,
-    "symptoms": [
-        {
-            "name": s.symptom,
-            "duration": s.duration,
-            "severity": s.severity,
-            "frequency": s.frequency
+            "animal": animal,
+            "patient": {
+                "age": patient_info.age,
+                "breed": patient_info.breed,
+                "gender": patient_info.gender,
+                "weight": patient_info.weight
+            },
+            "symptoms": [
+                {
+                    "name": s.symptom,
+                    "duration": s.duration,
+                    "severity": s.severity,
+                    "frequency": s.frequency
+                }
+                for s in symptoms if s.symptom
+            ],
+            "diseases": [
+                {"name": d.disease_name, "confidence": d.confidence}
+                for d in diseases
+            ]
         }
-        for s in symptoms
-    ],
-    "diseases": [
-        {
-            "name": d.disease_name,
-            "confidence": d.confidence
+
+        extracted_symptoms: Set[str] = {
+            s.symptom.lower() for s in symptoms if s.symptom
         }
-        for d in diseases
-    ]
-}
 
         questions: List[FollowUpQuestion] = []
 
-        extracted_symptoms = {s.symptom for s in symptoms}
-
-        # 1. Ask ONLY missing details for PRESENT symptoms
+        # 1️⃣ Ask only missing details for reported symptoms
         for symptom in symptoms:
-            questions.extend(
-                self._generate_missing_symptom_detail_questions(symptom, animal)
-            )
+            if symptom.symptom:
+                questions.extend(
+                    self._generate_missing_symptom_detail_questions(symptom, animal)
+                )
 
-        # 2. Ask disease-confirmation questions ONLY for high-confidence diseases
+        # 2️⃣ Disease-specific confirmation (confidence gated)
         for disease in diseases:
             if disease.confidence >= 0.5:
                 questions.extend(
                     self._generate_disease_specific_questions(
-                        disease,
-                        animal,
-                        extracted_symptoms
+                        disease, animal, extracted_symptoms
                     )
                 )
 
-        # 3. Ask general history ONLY if still relevant
+        # 3️⃣ General history / lifestyle questions (context-aware)
         questions.extend(
             self._generate_relevant_history_questions(symptoms, animal)
         )
 
-        # Deduplicate + sort
+        # Deduplicate
         questions = self._deduplicate_questions(questions)
-        questions.sort(key=lambda q: q.priority, reverse=True)
 
+        # --- AI relevance scoring (SAFE MODE) ---
+        for q in questions:
+            ai_score = self._ai_score_question(q.question, context)
+            if ai_score > q.priority:
+                q.priority = ai_score
+        # --------------------------------------
+
+        # Sort & limit
+        questions.sort(key=lambda q: q.priority, reverse=True)
         return questions[:max_questions]
 
-    # ------------------------------------------------------------------
-
+    # -----------------------------------------------------------------
+    # Symptom detail questions
+    # -----------------------------------------------------------------
     def _generate_missing_symptom_detail_questions(
         self,
         symptom: SymptomExtraction,
         animal: str
     ) -> List[FollowUpQuestion]:
 
-        q = []
-        name = symptom.symptom.replace("_", " ")
+        qs: List[FollowUpQuestion] = []
+        name = symptom.symptom.replace("_", " ").strip()
 
         if not symptom.duration:
-            q.append(FollowUpQuestion(
-                "symptom_details",
-                f"How long has your {animal} had {name}?",
-                5,
-                "Symptom duration is critical for diagnosis"
+            qs.append(FollowUpQuestion(
+                category="symptom_details",
+                question=f"How long has your {animal} had {name}?",
+                priority=5,
+                reasoning="Duration helps distinguish acute vs chronic conditions"
             ))
 
         if not symptom.severity:
-            q.append(FollowUpQuestion(
-                "symptom_details",
-                f"How severe is the {name} (mild, moderate, severe)?",
-                4,
-                "Severity determines urgency and disease stage"
+            qs.append(FollowUpQuestion(
+                category="symptom_details",
+                question=f"How severe is the {name} (mild, moderate, or severe)?",
+                priority=4,
+                reasoning="Severity indicates urgency and disease progression"
             ))
 
         if not symptom.frequency:
-            q.append(FollowUpQuestion(
-                "symptom_details",
-                f"How often does the {name} occur?",
-                3,
-                "Frequency helps distinguish acute vs chronic illness"
+            qs.append(FollowUpQuestion(
+                category="symptom_details",
+                question=f"How often does your {animal} experience {name}?",
+                priority=3,
+                reasoning="Frequency patterns aid differential diagnosis"
             ))
 
-        return q
+        return qs
 
-    # ------------------------------------------------------------------
-
+    # -----------------------------------------------------------------
+    # Disease-specific questions
+    # -----------------------------------------------------------------
     def _generate_disease_specific_questions(
         self,
         disease: DiseaseExtraction,
         animal: str,
-        extracted_symptoms: set
+        extracted_symptoms: Set[str]
     ) -> List[FollowUpQuestion]:
 
-        q = []
-        disease_name = disease.disease_name.replace("_", " ")
-
-        base_priority = 5 if disease.confidence >= 0.8 else 4
-
         if not self.db:
-            return q
+            return []
 
         db_disease = self.db.search_by_name(disease.disease_name)
         if not db_disease:
-            return q
+            return []
 
-        # Ask ONLY about symptoms NOT yet mentioned
-        missing = self._find_missing_symptoms(
-            db_disease.common_symptoms,
-            extracted_symptoms
-        )
+        qs: List[FollowUpQuestion] = []
+        disease_name = disease.disease_name.replace("_", " ").strip()
+        base_priority = 5 if disease.confidence >= 0.8 else 4
 
-        if missing:
-            display = " or ".join(s.replace("_", " ") for s in missing[:2])
-            q.append(FollowUpQuestion(
-                "disease_confirmation",
-                f"Has your {animal} shown any {display}?",
-                base_priority,
-                f"These symptoms are commonly linked to {disease_name}"
+        # Missing hallmark symptoms
+        if hasattr(db_disease, "common_symptoms") and db_disease.common_symptoms:
+            missing = self._find_missing_symptoms(
+                db_disease.common_symptoms, extracted_symptoms
+            )
+            if missing:
+                display = " or ".join(s.replace("_", " ") for s in missing[:2])
+                qs.append(FollowUpQuestion(
+                    category="disease_confirmation",
+                    question=f"Has your {animal} shown any {display}?",
+                    priority=base_priority,
+                    reasoning=f"These symptoms are commonly associated with {disease_name}"
+                ))
+
+        # Exposure / cause questions (high confidence only)
+        if (
+            disease.confidence >= 0.7
+            and hasattr(db_disease, "causes")
+            and db_disease.causes
+        ):
+            causes = " or ".join(c.replace("_", " ") for c in db_disease.causes[:2])
+            qs.append(FollowUpQuestion(
+                category="disease_confirmation",
+                question=f"Has your {animal} been exposed to {causes} recently?",
+                priority=base_priority - 1,
+                reasoning=f"Exposure history helps confirm or rule out {disease_name}"
             ))
 
-        # Cause exposure question (only if disease confidence is high)
-        if db_disease.causes and disease.confidence >= 0.7:
-            causes = " or ".join(db_disease.causes[:2])
-            q.append(FollowUpQuestion(
-                "disease_confirmation",
-                f"Has your {animal} been exposed to {causes}?",
-                base_priority - 1,
-                f"Exposure helps confirm {disease_name}"
-            ))
+        return qs
 
-        return q
-
-    # ------------------------------------------------------------------
-
+    # -----------------------------------------------------------------
+    # General history questions
+    # -----------------------------------------------------------------
     def _generate_relevant_history_questions(
         self,
         symptoms: List[SymptomExtraction],
         animal: str
     ) -> List[FollowUpQuestion]:
 
-        symptom_keys = {s.symptom for s in symptoms}
-        q = []
+        symptom_set = {s.symptom.lower() for s in symptoms if s.symptom}
+        qs: List[FollowUpQuestion] = []
 
-        if {"vomiting", "diarrhea"} & symptom_keys:
-            q.append(FollowUpQuestion(
-                "lifestyle",
-                f"What type of food and diet is your {animal} on?",
-                4,
-                "Diet is closely linked to gastrointestinal conditions"
+        if {"vomiting", "diarrhea", "regurgitation"} & symptom_set:
+            qs.append(FollowUpQuestion(
+                category="lifestyle",
+                question=f"What is your {animal}'s current diet and feeding routine?",
+                priority=4,
+                reasoning="Diet strongly influences gastrointestinal conditions"
             ))
 
-        if not symptom_keys.isdisjoint({"lethargy", "fever"}):
-            q.append(FollowUpQuestion(
-                "medical_history",
-                f"Is your {animal} currently on any medications?",
-                4,
-                "Medications may mask or worsen symptoms"
+        if {"lethargy", "fever", "weakness", "inappetence"} & symptom_set:
+            qs.append(FollowUpQuestion(
+                category="medical_history",
+                question=f"Is your {animal} currently on any medications or supplements?",
+                priority=4,
+                reasoning="Medications can mask or worsen symptoms"
             ))
 
-        return q
+        return qs
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+    @staticmethod
+    def _find_missing_symptoms(
+        expected: List[str],
+        found: Set[str]
+    ) -> List[str]:
+        expected_lower = {s.lower() for s in expected}
+        return [s for s in expected if s.lower() not in found]
 
     @staticmethod
-    def _find_missing_symptoms(expected: List[str], found: set) -> List[str]:
-        return [s for s in expected if s not in found]
+    def _deduplicate_questions(
+        questions: List[FollowUpQuestion]
+    ) -> List[FollowUpQuestion]:
 
-    @staticmethod
-    def _deduplicate_questions(questions: List[FollowUpQuestion]) -> List[FollowUpQuestion]:
         seen = set()
-        unique = []
+        unique: List[FollowUpQuestion] = []
+
         for q in questions:
-            key = q.question.lower()
+            key = (q.category, q.question.lower().strip())
             if key not in seen:
                 seen.add(key)
                 unique.append(q)
+
         return unique
