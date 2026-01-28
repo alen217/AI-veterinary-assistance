@@ -25,8 +25,9 @@ class DiseaseExtraction:
 class FollowUpQuestion:
     category: str
     question: str
-    priority: int          # higher = more important
-    reasoning: str
+    priority: int
+    reasoning: str                 # rule-based reason
+    ai_reason: Optional[str] = None  # AI explanation (optional)
 
 
 @dataclass
@@ -169,11 +170,16 @@ class FollowUpQuestionGenerator:
         questions = self._deduplicate_questions(questions)
 
         # --- AI relevance scoring (SAFE MODE) ---
+        # --------------------------------------
         for q in questions:
             ai_score = self._ai_score_question(q.question, context)
+
             if ai_score > q.priority:
+                q.ai_reason = (
+                    f"AI marked this question as highly relevant based on "
+                    f"the current symptoms and suspected diseases."
+                )
                 q.priority = ai_score
-        # --------------------------------------
 
         # Sort & limit
         questions.sort(key=lambda q: q.priority, reverse=True)
