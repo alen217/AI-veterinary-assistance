@@ -3,6 +3,7 @@ class FollowUpQuestionGenerator:
     Generates disease-relevant, confidence-aware follow-up questions
     """
 
+
     def __init__(self, db: Optional[VeterinaryDatabase] = None):
         self.db = db
 
@@ -15,6 +16,26 @@ class FollowUpQuestionGenerator:
     ) -> List[FollowUpQuestion]:
 
         animal = patient_info.animal_type or "pet"
+        context = {
+    "animal": animal,
+    "symptoms": [
+        {
+            "name": s.symptom,
+            "duration": s.duration,
+            "severity": s.severity,
+            "frequency": s.frequency
+        }
+        for s in symptoms
+    ],
+    "diseases": [
+        {
+            "name": d.disease_name,
+            "confidence": d.confidence
+        }
+        for d in diseases
+    ]
+}
+
         questions: List[FollowUpQuestion] = []
 
         extracted_symptoms = {s.symptom for s in symptoms}
