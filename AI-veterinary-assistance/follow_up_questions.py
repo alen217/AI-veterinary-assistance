@@ -1,5 +1,7 @@
 from typing import List, Optional, Set
 from dataclasses import dataclass
+from sentence_transformers import SentenceTransformer, util
+
 
 # ---------------------------------------------------------------------
 # Data Models
@@ -60,21 +62,46 @@ class FollowUpQuestionGenerator:
     Uses deterministic rules with optional AI-based priority boosting.
     """
 
+
     def __init__(self, db: Optional[VeterinaryDatabase] = None):
         self.db = db
+        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
     # -----------------------------------------------------------------
     # AI relevance scoring (SAFE STUB)
     # -----------------------------------------------------------------
     def _ai_score_question(self, question: str, context: dict) -> int:
         """
-        Rates how relevant a follow-up question is (1–5) given patient context.
-        MUST NOT generate new questions or diagnoses.
-        Currently disabled (returns 0).
+        Local AI relevance scoring using sentence embeddings.
+        Returns a score from 1 to 5.
         """
-        # Future: LLM call here
-        return 0
 
+        # 1. Build context text
+        context_text = (
+            f"Animal: {context['animal']}. "
+            f"Symptoms: {', '.join([s['name'] for s in context['symptoms']])}. "
+            f"Diseases: {', '.join([d['name'] for d in context['diseases']])}."
+     )
+
+        # 2. Compute embeddings
+        embeddings = self.embedding_model.encode(
+            [question, context_text],
+            convert_to_tensor=True
+        )
+
+        similarity = util.cos_sim(embeddings[0], embeddings[1]).item()
+
+        # 3. Map similarity → priority boost
+        if similarity >= 0.80:
+            return 5
+        elif similarity >= 0.60:
+            return 4
+        elif similarity >= 0.45:
+            return 3
+        elif similarity >= 0.30:
+            return 2
+        else:
+            return 1
     # -----------------------------------------------------------------
     # Main entry point
     # -----------------------------------------------------------------
