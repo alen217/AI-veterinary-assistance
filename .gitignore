@@ -1,27 +1,40 @@
+# --------------------
 # Python
+# --------------------
 __pycache__/
 *.pyc
 
+# --------------------
 # Environment
+# --------------------
 .env
 .venv/
 venv/
-env/
 
+# --------------------
 # ML models (DO NOT COMMIT)
+# --------------------
 *.pth
 *.pt
 *.ckpt
 
-# Training data (DO NOT COMMIT)
+# --------------------
+# Training data
+# --------------------
 ml_training/**/data/
 
+# --------------------
 # Training outputs / checkpoints
+# --------------------
 ml_training/**/outputs/
 
+# --------------------
 # Runtime temp files
+# --------------------
 temp_uploads/
 ava/runtime/**/uploads/
 
+# --------------------
 # Test artifacts
+# --------------------
 test_image.jpeg
