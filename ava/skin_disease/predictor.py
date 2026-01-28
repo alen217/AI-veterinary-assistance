@@ -1,42 +1,67 @@
+import os
 import torch
 from torchvision import transforms
 from PIL import Image
-import os
 
 from ava.skin_disease.model import get_model
 
-print("Predictor module loaded")
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pth")
+class SkinDiseasePredictor:
+    """
+    Skin disease classifier wrapper.
+    Loads model lazily and predicts safely.
+    """
 
-CLASSES = ["fungal", "mange", "normal", "wound"]
+    CLASSES = ["fungal", "mange", "normal", "wound"]
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def __init__(self):
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
 
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-])
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+        ])
 
-model = get_model(len(CLASSES))
-state_dict = torch.load(MODEL_PATH, map_location=device)
-model.load_state_dict(state_dict)
-model.to(device)
-model.eval()
+        model_path = os.path.join(
+            os.path.dirname(__file__),
+            "model.pth"
+        )
 
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Skin disease model not found: {model_path}"
+            )
 
-def predict_skin_disease(image_path: str):
-    print("Predict function called with:", image_path)
+        # Load model
+        self.model = get_model(len(self.CLASSES))
+        checkpoint = torch.load(model_path, map_location=self.device)
+        
+        # Check if the file is a checkpoint dictionary or just weights
+        if "model_state" in checkpoint:
+            state_dict = checkpoint["model_state"]  # Extract just the weights
+        else:
+            state_dict = checkpoint  # It was already just weights
+            
+        self.model.load_state_dict(state_dict)
+        self.model.to(self.device)
+        self.model.eval()
 
-    image = Image.open(image_path).convert("RGB")
-    image = transform(image).unsqueeze(0).to(device)
+    def predict(self, image_path: str) -> tuple[str, float]:
+        """
+        Returns (label, confidence)
+        """
 
-    with torch.no_grad():
-        outputs = model(image)
-        probs = torch.softmax(outputs, dim=1)
-        idx = torch.argmax(probs, dim=1).item()
+        image = Image.open(image_path).convert("RGB")
+        image = self.transform(image).unsqueeze(0).to(self.device)
 
-    return {
-        "prediction": CLASSES[idx],
-        "confidence": float(probs[0][idx])
-    }
+        with torch.no_grad():
+            outputs = self.model(image)
+            probs = torch.softmax(outputs, dim=1)
+            idx = torch.argmax(probs, dim=1).item()
+
+        return (
+            self.CLASSES[idx],
+            float(probs[0][idx])
+        )

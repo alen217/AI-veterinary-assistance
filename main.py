@@ -1,86 +1,70 @@
-"""
-Main Veterinary AI Assistant Application
-Orchestrates patient text analysis, database searching, and follow-up question generation
-"""
 from mongo_disease_repository import MongoDiseaseRepository
-
-from typing import Dict, List
-import json
-
 from nlp_patient_analyzer import VeterinaryNLPAnalyzer, AnalysisResult
 from follow_up_questions import FollowUpQuestionGenerator
-
 from ava.skin_disease.adapter import SkinDiseaseAdapter
+from typing import Dict, List
+import json
 
 
 class VeterinaryAIAssistant:
     """
     Main AI assistant for veterinary patient analysis.
-    Integrates NLP analysis, database search, and follow-up question generation.
+
+    Responsibilities:
+    - NLP symptom extraction
+    - MongoDB disease matching
+    - Explainable follow-up questions
+    - Optional skin disease ML inference
     """
 
-    
     def __init__(self, disease_repo: MongoDiseaseRepository | None = None):
+        # NLP
         self.analyzer = VeterinaryNLPAnalyzer()
+
+        # Mongo disease repository
         self.disease_repo = disease_repo or MongoDiseaseRepository()
-        self.question_generator = FollowUpQuestionGenerator(self.disease_repo)  
 
-        
-    class VeterinaryAIAssistant:
-        def __init__(self, disease_repo=None):
-            self.analyzer = VeterinaryNLPAnalyzer()
-            self.disease_repo = disease_repo or MongoDiseaseRepository()
-            self.question_generator = FollowUpQuestionGenerator(self.disease_repo)
-            self.skin_adapter = SkinDiseaseAdapter()
-            if self.skin_adapter.available:
-                skin_result = self.skin_adapter.predict(image)
-            else:
-                skin_result = None
+        # Follow-up questions (Mongo-backed)
+        self.question_generator = FollowUpQuestionGenerator(self.disease_repo)
 
-    
-    def analyze_skin_image(self, image_path: str) -> dict:
-    
+        # Optional skin disease ML adapter
+        self.skin_adapter = SkinDiseaseAdapter()
+
+    # ------------------------------------------------------------------
+    # OPTIONAL ML: SKIN DISEASE ANALYSIS
+    # ------------------------------------------------------------------
+    def analyze_skin_image(self, image_path: str) -> Dict | None:
         """
-        Optional ML-based skin disease analysis
+        Run ML-based skin disease prediction if model is available.
+        Returns None if ML is unavailable.
         """
+        if not getattr(self.skin_adapter, "available", False):
+            return None
+    
         return self.skin_adapter.analyze_image(image_path)
 
     # ------------------------------------------------------------------
-    # MAIN PIPELINE
+    # MAIN NLP + MONGO PIPELINE
     # ------------------------------------------------------------------
-    def _decide_question_limit(self, db_matches: list[dict]) -> int:
-        if not db_matches:
-            return 6  # low confidence fallback
-
-        top_confidence = db_matches[0].get("confidence", 0.0)
-
-        if top_confidence >= 0.75:
-            return 2
-        elif top_confidence >= 0.40:
-            return 4
-        else:
-            return 6
-
     def analyze_patient_text(
         self,
         patient_text: str,
         generate_questions: bool = True
     ) -> Dict:
         """
-        Complete analysis of patient text.
+        Full text-based patient analysis pipeline.
         """
 
-        # Step 1: NLP analysis
-        analysis = self.analyzer.analyze(patient_text)
+        # Step 1: NLP
+        analysis: AnalysisResult = self.analyzer.analyze(patient_text)
 
-        # Step 2: Database search
+        # Step 2: MongoDB disease search
         related_diseases = self._search_for_related_diseases(analysis)
 
         # Step 3: Follow-up questions
         questions = []
         if generate_questions:
             limit = self._decide_question_limit(related_diseases)
-
             questions = self.question_generator.generate_questions(
                 analysis.patient_info,
                 analysis.symptoms,
@@ -88,8 +72,7 @@ class VeterinaryAIAssistant:
                 max_questions=limit
             )
 
-
-        result = {
+        return {
             "patient_analysis": analysis,
             "database_matches": related_diseases,
             "follow_up_questions": questions,
@@ -98,12 +81,9 @@ class VeterinaryAIAssistant:
             )
         }
 
-        return result
-
     # ------------------------------------------------------------------
-    # DATABASE MATCHING
+    # MONGO SEARCH
     # ------------------------------------------------------------------
-
     def _search_for_related_diseases(self, analysis: AnalysisResult) -> List[Dict]:
         if not analysis.symptoms:
             return []
@@ -113,22 +93,36 @@ class VeterinaryAIAssistant:
         db_results = self.disease_repo.find_by_symptoms(symptom_keys)
 
         results = []
-        for disease in db_results:
+        for d in db_results:
             results.append({
-                "name": disease["name"],
-                "scientific_name": disease.get("scientific_name"),
-                "description": disease.get("description"),
-                "treatment": disease.get("treatment"),
-                "prevention": disease.get("prevention"),
-                "severity": disease.get("severity"),
-                "affected_species": disease.get("affected_species", []),
-                "confidence": disease.get("match_score", 0.0),
-                "symptom_matches": disease.get("match_count", 0),
+                "name": d.get("name"),
+                "scientific_name": d.get("scientific_name"),
+                "description": d.get("description"),
+                "treatment": d.get("treatment"),
+                "prevention": d.get("prevention"),
+                "severity": d.get("severity"),
+                "affected_species": d.get("affected_species", []),
+                "confidence": d.get("match_score", d.get("confidence", 0.0)),
+
             })
 
         return results[:5]
 
+    # ------------------------------------------------------------------
+    # QUESTION LIMIT LOGIC
+    # ------------------------------------------------------------------
+    def _decide_question_limit(self, db_matches: List[Dict]) -> int:
+        if not db_matches:
+            return 6
 
+        top_confidence = db_matches[0].get("confidence", 0.0)
+
+        if top_confidence >= 0.75:
+            return 2
+        elif top_confidence >= 0.40:
+            return 4
+        else:
+            return 6
 
     # ------------------------------------------------------------------
     # RECOMMENDATIONS

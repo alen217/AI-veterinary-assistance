@@ -618,7 +618,7 @@ def show_diagnosis_page():
 
                     st.markdown(
                         f"""
-                        **Predicted condition:** `{skin_result['label']}`  
+                        **Predicted condition:** `{skin_result['prediction']}`  
                         **Model confidence:** `{skin_result['confidence']:.2%}`
                         """
                     )

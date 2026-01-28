@@ -10,13 +10,11 @@ __pycache__/
 .env
 .venv/
 venv/
+cd ml_training/skin_disease/src
 
-# --------------------
-# ML models (DO NOT COMMIT)
-# --------------------
 *.pth
-*.pt
-*.ckpt
+ava/skin_disease/model.pth
+
 
 # --------------------
 # Training data
