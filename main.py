@@ -32,6 +32,11 @@ class VeterinaryAIAssistant:
             self.disease_repo = disease_repo or MongoDiseaseRepository()
             self.question_generator = FollowUpQuestionGenerator(self.disease_repo)
             self.skin_adapter = SkinDiseaseAdapter()
+            if self.skin_adapter.available:
+                skin_result = self.skin_adapter.predict(image)
+            else:
+                skin_result = None
+
     
     def analyze_skin_image(self, image_path: str) -> dict:
     

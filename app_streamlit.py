@@ -7,7 +7,7 @@ print("🚨 RUNNING FILE:", os.path.abspath(__file__))
 print("🚨 WORKING DIR:", os.getcwd())
 
 import streamlit as st
-import os
+import tempfile
 from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 from pathlib import Path
@@ -237,6 +237,16 @@ class UserManager:
             ).sort("created_at", -1)
         )
 
+# Helper to save uploaded file temporarily
+def save_temp_image(uploaded_file):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f:
+            f.write(uploaded_file.getbuffer())
+            return f.name
+    except Exception as e:
+        st.error(f"Error saving image: {e}")
+        return None
+
 # Initialize session state
 def init_session_state():
     defaults = {
@@ -306,28 +316,6 @@ def show_login_page():
                     else:
                         st.error("❌ Username already exists")
 
-uploaded_image = st.file_uploader(
-    "Upload skin image (optional)",
-    type=["jpg", "jpeg", "png"]
-)
-if uploaded_image:
-    image_path = save_temp_image(uploaded_image)
-    skin_result = assistant.analyze_skin_image(image_path)
-
-if uploaded_image and skin_result:
-    st.markdown("## 🧬 Skin Image Analysis (AI-assisted)")
-
-    st.markdown(
-        f"""
-        **Predicted condition:** `{skin_result['label']}`  
-        **Model confidence:** `{skin_result['confidence']:.2%}`
-        """
-    )
-
-    st.info(
-        "This result is AI-assisted and used as supporting evidence. "
-        "Final diagnosis depends on clinical symptoms and database correlation."
-    )
 
 def show_admin_panel():
     st.markdown("## 👨‍💼 Admin Panel")
@@ -391,7 +379,8 @@ def show_admin_panel():
         if st.button("Seed Now"):
             try:
                 from seed_large_dataset import seed
-
+                # Assuming get_db is available in the scope or imported
+                from user_database import get_db 
                 seed(get_db(), disease_count=int(seed_diseases), symptom_count=int(seed_symptoms))
                 st.success("✅ Seeding completed")
                 st.rerun()
@@ -403,6 +392,7 @@ def show_admin_panel():
         st.markdown("### 📊 Database Statistics")
 
         try:
+            from user_database import get_db
             db = get_db()
 
             disease_count = db.diseases.count_documents({})
@@ -481,6 +471,7 @@ def show_home_page():
 
     # Stats
     try:
+        from user_database import get_db
         db = get_db()
 
         disease_count = db.diseases.count_documents({})
@@ -568,6 +559,12 @@ def show_diagnosis_page():
         help="Describe the patient's symptoms, duration, severity, and any relevant medical history."
     )
 
+    # Image Uploader (Integrated here)
+    uploaded_image = st.file_uploader(
+        "Upload skin image (optional)",
+        type=["jpg", "jpeg", "png"]
+    )
+
     col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
@@ -578,19 +575,26 @@ def show_diagnosis_page():
 
     if analyze_button and patient_text:
         with st.spinner("🔄 Analyzing patient data..."):
+            skin_result = None
             try:
                 repo = MongoDiseaseRepository()
                 assistant = VeterinaryAIAssistant(repo)
+                
+                # Handle Image Analysis
+                if uploaded_image:
+                    image_path = save_temp_image(uploaded_image)
+                    if image_path:
+                        skin_result = assistant.analyze_skin_image(image_path)
+                        if assistant.skin_adapter and not assistant.skin_adapter.available:
+                            st.info("🧪 Skin disease AI is optional and not installed on this system.")
+                
                 result = assistant.analyze_patient_text(
                     patient_text,
                     generate_questions=generate_questions,
                 )
 
                 st.success("✅ Analysis Complete!")
-                # -------------------------------
-
-
-
+                
                 # -----------------------------
                 # Patient Info
                 # -----------------------------
@@ -605,6 +609,24 @@ def show_diagnosis_page():
                     st.metric("Breed", patient_info.breed or "Unknown")
                 with col4:
                     st.metric("Weight", patient_info.weight or "Unknown")
+
+                # -----------------------------
+                # Skin Image Analysis Display
+                # -----------------------------
+                if uploaded_image and skin_result:
+                    st.markdown("## 🧬 Skin Image Analysis (AI-assisted)")
+
+                    st.markdown(
+                        f"""
+                        **Predicted condition:** `{skin_result['label']}`  
+                        **Model confidence:** `{skin_result['confidence']:.2%}`
+                        """
+                    )
+
+                    st.info(
+                        "This result is AI-assisted and used as supporting evidence. "
+                        "Final diagnosis depends on clinical symptoms and database correlation."
+                    )
 
                 # -----------------------------
                 # Symptoms
@@ -674,7 +696,6 @@ def show_diagnosis_page():
                 # -----------------------------
                 # Follow-up Questions
                 # -----------------------------
-                # Follow-up Questions
                 if generate_questions and result.get('follow_up_questions'):
                     st.markdown("### ❓ Follow-up Questions")
 
@@ -688,30 +709,10 @@ def show_diagnosis_page():
 
                             with st.expander("Why is this question asked?"):
                                 st.markdown(f"**Clinical reasoning:** {question.reasoning}")
-                        # Explainable AI button
-                        with st.expander("Why this question?"):
-                            st.markdown(f"**Clinical reason:** {q.reasoning}")
-                            if getattr(q, "ai_reason", None):
-                                st.markdown(f"**AI insight:** {q.ai_reason}")
 
             except Exception as e:
                 st.error(f"❌ Error during analysis: {e}")
                 st.exception(e)
-            # Follow-up Questions (Explainable)
-            # -------------------------------
-            if generate_questions and result.get("follow_up_questions"):
-                st.markdown("## ❓ Follow-up Questions")
-
-                for i, question in enumerate(result["follow_up_questions"], 1):
-                    with st.container():
-                        st.markdown(
-                            f"**Q{i}: {question.question}**  \n"
-                            f"*Category:* `{question.category}` | "
-                            f"*Priority:* {'⭐' * question.priority}"
-                        )
-
-                        with st.expander("Why is this question asked?"):
-                            st.markdown(f"🧠 **Clinical reasoning:** {question.reasoning}")
 
     elif analyze_button:
         st.warning("⚠️ Please enter patient description.")

@@ -31,3 +31,13 @@ class MongoDiseaseRepository:
 
         diseases.sort(key=lambda x: x["symptom_match_count"], reverse=True)
         return diseases[:limit]
+    
+    def find_by_name(self, name: str) -> dict | None:
+        if not name:
+            return None
+
+        return self.collection.find_one(
+            {"name": {"$regex": f"^{name}$", "$options": "i"}},
+            {"_id": 0}
+    )
+
