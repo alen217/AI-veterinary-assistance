@@ -2,11 +2,15 @@
 Follow-up Question Generator
 Generates contextual follow-up questions based on patient analysis and database search results
 """
+import os
+print("🚨 follow_up_questions.py LOADED FROM:", os.path.abspath(__file__))
+
+
 
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
 from nlp_patient_analyzer import PatientInfo, SymptomExtraction, DiseaseExtraction
-from veterinary_database import Disease, VeterinaryDatabase
+from mongo_disease_repository import MongoDiseaseRepository
 
 
 @dataclass
@@ -15,17 +19,16 @@ class FollowUpQuestion:
     category: str  # symptom_details, disease_confirmation, treatment_history, lifestyle, etc.
     question: str
     priority: int  # 1-5, higher = more important
-    reason: str  # Why this question is being asked
+    reasoning: str  # Why this question is being asked
 
 
 class FollowUpQuestionGenerator:
     """
     Generates contextual follow-up questions based on patient analysis
+
     """
-    
-    def __init__(self, db: Optional[VeterinaryDatabase] = None):
-        """Initialize generator with optional database"""
-        self.db = db
+    def __init__(self, disease_repo: MongoDiseaseRepository):
+        self.disease_repo = disease_repo
         self.question_templates = self._load_question_templates()
     
     @staticmethod
@@ -173,7 +176,7 @@ class FollowUpQuestionGenerator:
         patient_info: PatientInfo,
         symptoms: List[SymptomExtraction],
         diseases: List[DiseaseExtraction],
-        max_questions: int = 8
+        max_questions: int = 5
     ) -> List[FollowUpQuestion]:
         """
         Generate contextual follow-up questions
@@ -196,7 +199,9 @@ class FollowUpQuestionGenerator:
         
         # Generate disease-specific questions
         for disease in diseases[:3]:  # Top 3 suspected diseases
-            questions.extend(self._generate_disease_questions(disease, animal))
+            questions.extend(
+                self._generate_disease_questions(disease, animal, symptoms)
+            )
         
         # Generate general medical history questions
         questions.extend(self._generate_medical_history_questions(animal))
@@ -221,7 +226,7 @@ class FollowUpQuestionGenerator:
                 category="symptom_details",
                 question=f"How long has your {animal} had {symptom_display}?",
                 priority=5,
-                reason=f"Duration of {symptom_display} is important for diagnosis"
+                reasoning=f"Duration of {symptom_display} is important for diagnosis"
             ))
         
         # If severity is missing
@@ -230,7 +235,7 @@ class FollowUpQuestionGenerator:
                 category="symptom_details",
                 question=f"How severe is the {symptom_display} (mild, moderate, or severe)?",
                 priority=4,
-                reason=f"Severity helps assess urgency and disease progression"
+                reasoning=f"Severity helps assess urgency and disease progression"
             ))
         
         # If frequency is missing
@@ -239,7 +244,7 @@ class FollowUpQuestionGenerator:
                 category="symptom_details",
                 question=f"How often is your {animal} experiencing {symptom_display} (daily, intermittent, etc.)?",
                 priority=3,
-                reason=f"Frequency patterns can indicate disease type"
+                reasoning=f"Frequency patterns can indicate disease type"
             ))
         
         # General symptom progression question
@@ -247,61 +252,59 @@ class FollowUpQuestionGenerator:
             category="symptom_details",
             question=f"Is the {symptom_display} getting worse, staying the same, or improving?",
             priority=3,
-            reason="Progression indicates disease trajectory"
+            reasoning="Progression indicates disease trajectory"
         ))
         
         return questions
     
-    def _generate_disease_questions(self, disease: DiseaseExtraction, animal: str) -> List[FollowUpQuestion]:
-        """Generate questions about suspected diseases"""
+    def _generate_disease_questions(
+        self,
+        disease: DiseaseExtraction,
+        animal: str,
+        symptoms: List[SymptomExtraction]
+    ) -> List[FollowUpQuestion]:
+
         questions = []
-        disease_name = disease.disease_name.replace("_", " ")
-        
-        # Look up disease in database for more specific questions
-        if self.db:
-            db_disease = self.db.search_by_name(disease.disease_name)
-            if db_disease:
-                # Ask about missing symptoms
-                missing_symptoms = self._find_missing_symptoms(
-                    db_disease.common_symptoms,
-                    {s.symptom for s in []}  # Would be actual symptoms
+
+        db_disease = self.disease_repo.find_by_name(disease.disease_name)
+        if not db_disease:
+            return questions
+
+        # Existing symptoms
+        present_symptoms = {s.symptom for s in symptoms}
+
+        # -------------------------
+        # Missing symptom questions
+        # -------------------------
+        common_symptoms = db_disease.get("common_symptoms", [])
+        missing = [s for s in common_symptoms if s not in present_symptoms]
+
+        if missing:
+            questions.append(
+                FollowUpQuestion(
+                    category="disease_confirmation",
+                    question=f"Has your {animal} also shown {missing[0].replace('_', ' ')}?",
+                    priority=4,
+                    reasoning=f"This symptom commonly occurs in {disease.disease_name}"
                 )
-                
-                if missing_symptoms:
-                    symptoms_display = " or ".join([s.replace('_', ' ') for s in missing_symptoms])
-                    questions.append(FollowUpQuestion(
-                        category="disease_confirmation",
-                        question=f"Has your {animal} shown any {symptoms_display}?",
-                        priority=4,
-                        reason=f"These symptoms are commonly associated with {disease_name}"
-                    ))
-                
-                # Ask about causes if relevant
-                if db_disease.causes:
-                    cause_str = " or ".join(db_disease.causes[:2])
-                    questions.append(FollowUpQuestion(
-                        category="disease_confirmation",
-                        question=f"Has your {animal} been exposed to {cause_str}?",
-                        priority=3,
-                        reason=f"These are common causes of {disease_name}"
-                    ))
-        
-        # General disease questions
-        questions.append(FollowUpQuestion(
-            category="disease_confirmation",
-            question=f"Is your {animal} up to date on vaccinations?",
-            priority=4,
-            reason=f"Vaccination status is crucial for infectious diseases like {disease_name}"
-        ))
-        
-        questions.append(FollowUpQuestion(
-            category="medical_history",
-            question=f"Has your {animal} been diagnosed with {disease_name} before?",
-            priority=2,
-            reason=f"Previous occurrences help confirm recurrent conditions"
-        ))
-        
+            )
+
+        # -------------------------
+        # Cause / exposure questions
+        # -------------------------
+        causes = db_disease.get("causes", [])
+        if causes:
+            questions.append(
+                FollowUpQuestion(
+                    category="risk_factors",
+                    question=f"Has your {animal} been exposed to {causes[0].replace('_', ' ')}?",
+                    priority=3,
+                    reasoning=f"This is a known cause of {disease.disease_name}"
+                )
+            )
+
         return questions
+
     
     def _generate_medical_history_questions(self, animal: str) -> List[FollowUpQuestion]:
         """Generate general medical history questions"""
@@ -310,25 +313,25 @@ class FollowUpQuestionGenerator:
                 category="medical_history",
                 question=f"Is your {animal} on any current medications or supplements?",
                 priority=4,
-                reason="Medications can interact with treatments and mask symptoms"
+                reasoning="Medications can interact with treatments and mask symptoms"
             ),
             FollowUpQuestion(
                 category="medical_history",
                 question=f"Does your {animal} have any known allergies or sensitivities?",
                 priority=4,
-                reason="Allergies can cause or complicate symptoms"
+                reasoning="Allergies can cause or complicate symptoms"
             ),
             FollowUpQuestion(
                 category="lifestyle",
                 question=f"What type of food and diet is your {animal} on?",
                 priority=3,
-                reason="Diet directly impacts gastrointestinal and systemic health"
+                reasoning="Diet directly impacts gastrointestinal and systemic health"
             ),
             FollowUpQuestion(
                 category="lifestyle",
                 question=f"Has there been any recent change in diet, environment, or routine?",
                 priority=3,
-                reason="Changes often trigger acute illness or symptom onset"
+                reasoning="Changes often trigger acute illness or symptom onset"
             )
         ]
     
@@ -347,25 +350,25 @@ class FollowUpQuestionGenerator:
                 "question": f"Have you noticed any changes in your {animal}'s appetite or drinking habits?",
                 "symptoms": ["loss_of_appetite", "dehydration"],
                 "priority": 4,
-                "reason": "Appetite and hydration changes indicate systemic illness"
+                "reasoning": "Appetite and hydration changes indicate systemic illness"
             },
             {
                 "question": f"Is your {animal} experiencing any vomiting or diarrhea?",
                 "symptoms": ["vomiting", "diarrhea"],
                 "priority": 4,
-                "reason": "GI symptoms are very common and important for diagnosis"
+                "reasoning": "GI symptoms are very common and important for diagnosis"
             },
             {
                 "question": f"Have you noticed any fever, unusual energy levels, or lethargy?",
                 "symptoms": ["fever", "lethargy"],
                 "priority": 4,
-                "reason": "These indicate systemic or infectious disease"
+                "reasoning": "These indicate systemic or infectious disease"
             },
             {
                 "question": f"Is your {animal} scratching, licking, or showing any skin or ear issues?",
                 "symptoms": ["itching", "skin_lesion", "discharge"],
                 "priority": 3,
-                "reason": "Dermatological issues are common and often missed"
+                "reasoning": "Dermatological issues are common and often missed"
             }
         ]
         
@@ -375,7 +378,7 @@ class FollowUpQuestionGenerator:
                     category="additional_symptoms",
                     question=group["question"],
                     priority=group["priority"],
-                    reason=group["reason"]
+                    reasoning=group["reasoning"]
                 ))
         
         return questions
@@ -420,7 +423,7 @@ class FollowUpQuestionGenerator:
             
             priority_str = "⚠️  CRITICAL" if question.priority >= 5 else "★ HIGH" if question.priority >= 4 else "○ MEDIUM"
             output.append(f"  {question_num}. {question.question}")
-            output.append(f"     {priority_str} | Reason: {question.reason}\n")
+            output.append(f"     {priority_str} | Reasoning: {question.reasoning}\n")
             question_num += 1
         
         output.append("="*70)
@@ -470,11 +473,3 @@ if __name__ == "__main__":
         )
     ]
     
-    # Generate questions
-    db = VeterinaryDatabase()
-    generator = FollowUpQuestionGenerator(db)
-    questions = generator.generate_questions(patient_info, symptoms, diseases)
-    
-    print(generator.format_questions_for_display(questions))
-    
-    db.close()

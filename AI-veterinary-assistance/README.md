@@ -1,1 +1,0 @@
-# AI-veterinary-assistance
