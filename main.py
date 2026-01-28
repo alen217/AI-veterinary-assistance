@@ -2,12 +2,15 @@
 Main Veterinary AI Assistant Application
 Orchestrates patient text analysis, database searching, and follow-up question generation
 """
+from mongo_disease_repository import MongoDiseaseRepository
 
 from typing import Dict, List
 import json
 
 from nlp_patient_analyzer import VeterinaryNLPAnalyzer, AnalysisResult
 from follow_up_questions import FollowUpQuestionGenerator
+
+from ava.skin_disease.adapter import SkinDiseaseAdapter
 
 
 class VeterinaryAIAssistant:
@@ -16,21 +19,42 @@ class VeterinaryAIAssistant:
     Integrates NLP analysis, database search, and follow-up question generation.
     """
 
-    def __init__(self, db):
-        """
-        Initialize the assistant with an injected database.
-        The database must expose:
-          - search_by_symptoms(symptom_keys)
-          - get_all_diseases() (optional, for CLI mode)
-        """
+    
+    def __init__(self, disease_repo: MongoDiseaseRepository | None = None):
         self.analyzer = VeterinaryNLPAnalyzer()
-        self.db = db
-        self.question_generator = FollowUpQuestionGenerator(self.db)
-        self.analysis_history = []
+        self.disease_repo = disease_repo or MongoDiseaseRepository()
+        self.question_generator = FollowUpQuestionGenerator(self.disease_repo)  
+
+        
+    class VeterinaryAIAssistant:
+        def __init__(self, disease_repo=None):
+            self.analyzer = VeterinaryNLPAnalyzer()
+            self.disease_repo = disease_repo or MongoDiseaseRepository()
+            self.question_generator = FollowUpQuestionGenerator(self.disease_repo)
+            self.skin_adapter = SkinDiseaseAdapter()
+    
+    def analyze_skin_image(self, image_path: str) -> dict:
+    
+        """
+        Optional ML-based skin disease analysis
+        """
+        return self.skin_adapter.analyze_image(image_path)
 
     # ------------------------------------------------------------------
     # MAIN PIPELINE
     # ------------------------------------------------------------------
+    def _decide_question_limit(self, db_matches: list[dict]) -> int:
+        if not db_matches:
+            return 6  # low confidence fallback
+
+        top_confidence = db_matches[0].get("confidence", 0.0)
+
+        if top_confidence >= 0.75:
+            return 2
+        elif top_confidence >= 0.40:
+            return 4
+        else:
+            return 6
 
     def analyze_patient_text(
         self,
@@ -50,11 +74,15 @@ class VeterinaryAIAssistant:
         # Step 3: Follow-up questions
         questions = []
         if generate_questions:
+            limit = self._decide_question_limit(related_diseases)
+
             questions = self.question_generator.generate_questions(
                 analysis.patient_info,
                 analysis.symptoms,
-                analysis.suspected_diseases
+                analysis.suspected_diseases,
+                max_questions=limit
             )
+
 
         result = {
             "patient_analysis": analysis,
@@ -65,54 +93,37 @@ class VeterinaryAIAssistant:
             )
         }
 
-        self.analysis_history.append(result)
         return result
 
     # ------------------------------------------------------------------
     # DATABASE MATCHING
     # ------------------------------------------------------------------
 
-    def _search_for_related_diseases(
-        self,
-        analysis: AnalysisResult
-    ) -> List[Dict]:
-
+    def _search_for_related_diseases(self, analysis: AnalysisResult) -> List[Dict]:
         if not analysis.symptoms:
             return []
 
         symptom_keys = [s.symptom for s in analysis.symptoms]
-        db_results = self.db.search_by_symptoms(symptom_keys)
 
-        matched_diseases = []
+        db_results = self.disease_repo.find_by_symptoms(symptom_keys)
 
-        for disease, match_count in db_results:
-            suspected = next(
-                (
-                    d for d in analysis.suspected_diseases
-                    if d.disease_name.lower() == disease.name.lower()
-                ),
-                None
-            )
-
-            confidence = (
-                suspected.confidence
-                if suspected
-                else match_count / max(len(disease.common_symptoms), 1)
-            )
-
-            matched_diseases.append({
-                "name": disease.name,
-                "scientific_name": disease.scientific_name,
-                "confidence": confidence,
-                "symptom_matches": match_count,
-                "description": disease.description,
-                "treatment": disease.treatment,
-                "prevention": disease.prevention,
-                "severity": disease.severity,
-                "affected_species": disease.affected_species,
+        results = []
+        for disease in db_results:
+            results.append({
+                "name": disease["name"],
+                "scientific_name": disease.get("scientific_name"),
+                "description": disease.get("description"),
+                "treatment": disease.get("treatment"),
+                "prevention": disease.get("prevention"),
+                "severity": disease.get("severity"),
+                "affected_species": disease.get("affected_species", []),
+                "confidence": disease.get("match_score", 0.0),
+                "symptom_matches": disease.get("match_count", 0),
             })
 
-        return matched_diseases[:5]
+        return results[:5]
+
+
 
     # ------------------------------------------------------------------
     # RECOMMENDATIONS

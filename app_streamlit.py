@@ -12,41 +12,14 @@ from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 from pathlib import Path
 from main import VeterinaryAIAssistant
-from veterinary_database import VeterinaryDatabase
 from user_database import UserDatabase
+from mongo_disease_repository import MongoDiseaseRepository
+
 
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
 load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
-
-
-@st.cache_resource
-def get_db() -> VeterinaryDatabase:
-    try:
-        return VeterinaryDatabase()
-    except Exception as exc:
-        mongo_url = os.getenv("MONGO_URL", "").strip()
-        is_missing = not mongo_url
-        is_local = mongo_url.startswith("mongodb://localhost") or mongo_url.startswith("mongodb://127.0.0.1")
-        
-        st.error("Database connection failed. The app cannot start without MongoDB.")
-        if is_missing:
-            st.info(
-                "`MONGO_URL` is not set. Create a `.env` file (copy `.env.example` → `.env`) "
-                "and set `MONGO_URL` to your MongoDB connection string."
-            )
-        elif is_local:
-            st.info(
-                "`MONGO_URL` points to local MongoDB, but it's not running. "
-                "Start MongoDB locally or use MongoDB Atlas."
-            )
-        else:
-            st.info(
-                "Check if your IP is allowed in MongoDB Atlas Network Access."
-            )
-        st.code(str(exc))
-        st.stop()
 
 
 # Configure page
@@ -333,6 +306,28 @@ def show_login_page():
                     else:
                         st.error("❌ Username already exists")
 
+uploaded_image = st.file_uploader(
+    "Upload skin image (optional)",
+    type=["jpg", "jpeg", "png"]
+)
+if uploaded_image:
+    image_path = save_temp_image(uploaded_image)
+    skin_result = assistant.analyze_skin_image(image_path)
+
+if uploaded_image and skin_result:
+    st.markdown("## 🧬 Skin Image Analysis (AI-assisted)")
+
+    st.markdown(
+        f"""
+        **Predicted condition:** `{skin_result['label']}`  
+        **Model confidence:** `{skin_result['confidence']:.2%}`
+        """
+    )
+
+    st.info(
+        "This result is AI-assisted and used as supporting evidence. "
+        "Final diagnosis depends on clinical symptoms and database correlation."
+    )
 
 def show_admin_panel():
     st.markdown("## 👨‍💼 Admin Panel")
@@ -584,14 +579,17 @@ def show_diagnosis_page():
     if analyze_button and patient_text:
         with st.spinner("🔄 Analyzing patient data..."):
             try:
-                db = get_db()
-                assistant = VeterinaryAIAssistant(db=db)
+                repo = MongoDiseaseRepository()
+                assistant = VeterinaryAIAssistant(repo)
                 result = assistant.analyze_patient_text(
                     patient_text,
                     generate_questions=generate_questions,
                 )
 
                 st.success("✅ Analysis Complete!")
+                # -------------------------------
+
+
 
                 # -----------------------------
                 # Patient Info
@@ -699,6 +697,21 @@ def show_diagnosis_page():
             except Exception as e:
                 st.error(f"❌ Error during analysis: {e}")
                 st.exception(e)
+            # Follow-up Questions (Explainable)
+            # -------------------------------
+            if generate_questions and result.get("follow_up_questions"):
+                st.markdown("## ❓ Follow-up Questions")
+
+                for i, question in enumerate(result["follow_up_questions"], 1):
+                    with st.container():
+                        st.markdown(
+                            f"**Q{i}: {question.question}**  \n"
+                            f"*Category:* `{question.category}` | "
+                            f"*Priority:* {'⭐' * question.priority}"
+                        )
+
+                        with st.expander("Why is this question asked?"):
+                            st.markdown(f"🧠 **Clinical reasoning:** {question.reasoning}")
 
     elif analyze_button:
         st.warning("⚠️ Please enter patient description.")

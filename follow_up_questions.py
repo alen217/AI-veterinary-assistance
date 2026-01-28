@@ -2,11 +2,13 @@
 Follow-up Question Generator
 Generates contextual follow-up questions based on patient analysis and database search results
 """
+import os
+print("🚨 follow_up_questions.py LOADED FROM:", os.path.abspath(__file__))
 
 from typing import List, Dict, Optional, Set
 from dataclasses import dataclass
 from nlp_patient_analyzer import PatientInfo, SymptomExtraction, DiseaseExtraction
-from veterinary_database import Disease, VeterinaryDatabase
+from mongo_disease_repository import MongoDiseaseRepository
 
 
 @dataclass
@@ -21,11 +23,10 @@ class FollowUpQuestion:
 class FollowUpQuestionGenerator:
     """
     Generates contextual follow-up questions based on patient analysis
+
     """
-    
-    def __init__(self, db: Optional[VeterinaryDatabase] = None):
-        """Initialize generator with optional database"""
-        self.db = db
+    def __init__(self, disease_repo: MongoDiseaseRepository):
+        self.disease_repo = disease_repo
         self.question_templates = self._load_question_templates()
     
     @staticmethod
@@ -173,7 +174,7 @@ class FollowUpQuestionGenerator:
         patient_info: PatientInfo,
         symptoms: List[SymptomExtraction],
         diseases: List[DiseaseExtraction],
-        max_questions: int = 8
+        max_questions: int = 5
     ) -> List[FollowUpQuestion]:
         """
         Generate contextual follow-up questions
@@ -258,13 +259,12 @@ class FollowUpQuestionGenerator:
         disease_name = disease.disease_name.replace("_", " ")
         
         # Look up disease in database for more specific questions
-        if self.db:
-            db_disease = self.db.search_by_name(disease.disease_name)
+        if self.disease_repo:
+            db_disease = self.disease_repo.find_by_name(disease.disease_name)
             if db_disease:
-                # Ask about missing symptoms
                 missing_symptoms = self._find_missing_symptoms(
-                    db_disease.common_symptoms,
-                    {s.symptom for s in []}  # Would be actual symptoms
+                    db_disease.get("common_symptoms", []),
+                    {s.symptom for s in symptoms}
                 )
                 
                 if missing_symptoms:
@@ -470,11 +470,3 @@ if __name__ == "__main__":
         )
     ]
     
-    # Generate questions
-    db = VeterinaryDatabase()
-    generator = FollowUpQuestionGenerator(db)
-    questions = generator.generate_questions(patient_info, symptoms, diseases)
-    
-    print(generator.format_questions_for_display(questions))
-    
-    db.close()
