@@ -107,3 +107,21 @@ class UserDatabase:
             .sort("created_at", -1)
             .limit(limit)
         )
+
+    from pymongo import MongoClient
+import os
+
+_client = None
+_db = None
+
+def get_db():
+    global _client, _db
+
+    if _db is None:
+        mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+        db_name = os.getenv("MONGO_DB_NAME", "veterinary_ai_db")
+
+        _client = MongoClient(mongo_url)
+        _db = _client[db_name]
+
+    return _db

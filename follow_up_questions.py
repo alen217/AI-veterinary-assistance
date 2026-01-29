@@ -193,27 +193,54 @@ class FollowUpQuestionGenerator:
         questions = []
         animal = patient_info.animal_type or "pet"
         
-        # Generate symptom detail questions
+        # 1. Always ask symptom details first
         for symptom in symptoms:
             questions.extend(self._generate_symptom_questions(symptom, animal))
         
-        # Generate disease-specific questions
-        for disease in diseases[:3]:  # Top 3 suspected diseases
-            questions.extend(
-                self._generate_disease_questions(disease, animal, symptoms)
-            )
-        
-        # Generate general medical history questions
-        questions.extend(self._generate_medical_history_questions(animal))
-        
-        # Generate additional symptom questions
-        questions.extend(self._generate_additional_symptom_questions(symptoms, animal))
+        # 2. ONLY proceed if core info (duration & severity) is present
+        if self._is_core_symptom_complete(symptoms):
+            
+            # 3. Generate disease-specific questions (High Confidence Only)
+            for disease in diseases[:3]:  # Check top 3 suspected diseases
+                if disease.confidence >= 0.6:
+                    questions.extend(
+                        self._generate_disease_questions(disease, animal, symptoms)
+                    )
+            
+            # 4. Generate additional symptom questions
+            questions.extend(self._generate_additional_symptom_questions(symptoms, animal))
+            
+            # 5. Generate general medical history questions
+            questions.extend(self._generate_medical_history_questions(animal))
         
         # Remove duplicates and sort by priority
         questions = self._deduplicate_questions(questions)
         questions.sort(key=lambda q: q.priority, reverse=True)
         
-        return questions[:max_questions]
+        # 6. Limit questions per category (Max 2)
+        MAX_PER_CATEGORY = 2
+        category_count = {}
+        filtered_questions = []
+        
+        for q in questions:
+            cat = q.category
+            count = category_count.get(cat, 0)
+            if count < MAX_PER_CATEGORY:
+                filtered_questions.append(q)
+                category_count[cat] = count + 1
+        
+        return filtered_questions[:max_questions]
+
+    # ✅ STEP 1: REQUIRED ENTRY POINT METHOD
+    def get_next_question(self, patient_info, symptoms, diseases):
+        """Helper method to generate exactly one question or None"""
+        questions = self.generate_questions(
+            patient_info,
+            symptoms,
+            diseases,
+            max_questions=1
+        )
+        return questions[0] if questions else None
     
     def _generate_symptom_questions(self, symptom: SymptomExtraction, animal: str) -> List[FollowUpQuestion]:
         """Generate questions about specific symptoms"""
@@ -404,6 +431,14 @@ class FollowUpQuestionGenerator:
                 unique.append(q)
         
         return unique
+
+    @staticmethod
+    def _is_core_symptom_complete(symptoms: List[SymptomExtraction]) -> bool:
+        """Check if all symptoms have essential duration and severity info"""
+        for s in symptoms:
+            if not s.duration or not s.severity:
+                return False
+        return True
     
     def format_questions_for_display(self, questions: List[FollowUpQuestion]) -> str:
         """Format questions as readable output"""
@@ -454,7 +489,7 @@ if __name__ == "__main__":
         SymptomExtraction(
             symptom="diarrhea",
             duration="3 days",
-            severity=None,
+            severity=None,  # Missing severity - this will trigger the core check to fail logic
             frequency="intermittent",
             context="Loose stools, intermittent throughout the day"
         )
@@ -473,3 +508,22 @@ if __name__ == "__main__":
         )
     ]
     
+    # Note: To test the full flow, ensure 'severity' is set for both symptoms above.
+    # With the current data (severity=None for diarrhea), it will only ask for severity details.
+    
+    # Mock Repo for demonstration purposes if real DB isn't available
+    class MockRepo:
+        def find_by_name(self, name):
+            return {"common_symptoms": ["loss_of_appetite", "fever"], "causes": ["dietary_indiscretion"]}
+
+    generator = FollowUpQuestionGenerator(MockRepo())
+    
+    # Test the new method
+    next_q = generator.get_next_question(patient_info, symptoms, diseases)
+    if next_q:
+        print(f"Next Question: {next_q.question}")
+    else:
+        print("No more questions.")
+        
+    questions = generator.generate_questions(patient_info, symptoms, diseases)
+    print(generator.format_questions_for_display(questions))

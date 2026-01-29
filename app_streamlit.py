@@ -12,15 +12,14 @@ from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 from pathlib import Path
 from main import VeterinaryAIAssistant
-from user_database import UserDatabase
+from user_database import UserDatabase, get_db
 from mongo_disease_repository import MongoDiseaseRepository
-
-
+from follow_up_questions import FollowUpQuestionGenerator
+from consultation_state_updater import apply_answer
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
 load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
-
 
 # Configure page
 st.set_page_config(
@@ -256,6 +255,19 @@ def init_session_state():
         'analysis_history': [],
         'show_register': False
     }
+    
+    # STEP 1: Add consultation state
+    if "consultation" not in st.session_state:
+        st.session_state.consultation = {
+            "patient_info": None,
+            "symptoms": [],
+            "diseases": [],
+            "matches": [], # To store full DB matches for display
+            "image_path": None,
+            "skin_result": None,
+            "answers": {}
+        }
+
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
@@ -379,9 +391,8 @@ def show_admin_panel():
         if st.button("Seed Now"):
             try:
                 from seed_large_dataset import seed
-                # Assuming get_db is available in the scope or imported
-                from user_database import get_db 
-                seed(get_db(), disease_count=int(seed_diseases), symptom_count=int(seed_symptoms))
+                db = get_db()
+                seed(db, disease_count=int(seed_diseases), symptom_count=int(seed_symptoms))
                 st.success("✅ Seeding completed")
                 st.rerun()
             except Exception as e:
@@ -392,7 +403,6 @@ def show_admin_panel():
         st.markdown("### 📊 Database Statistics")
 
         try:
-            from user_database import get_db
             db = get_db()
 
             disease_count = db.diseases.count_documents({})
@@ -471,9 +481,7 @@ def show_home_page():
 
     # Stats
     try:
-        from user_database import get_db
         db = get_db()
-
         disease_count = db.diseases.count_documents({})
         # Per-user analysis history is stored in MongoDB
         analysis_count = db.analysis_history.count_documents({"username": st.session_state.username})
@@ -559,28 +567,33 @@ def show_diagnosis_page():
         help="Describe the patient's symptoms, duration, severity, and any relevant medical history."
     )
 
-    # Image Uploader (Integrated here)
+    # Define uploaded_image before use
     uploaded_image = st.file_uploader(
         "Upload skin image (optional)",
         type=["jpg", "jpeg", "png"]
     )
 
     col1, col2, col3 = st.columns([2, 1, 1])
-
     with col1:
         analyze_button = st.button("🔍 Analyze Patient", use_container_width=True)
 
-    with col2:
-        generate_questions = st.checkbox("Generate Follow-up Questions", value=True)
+    # Initialize Repository for use in both analysis and question generation
+    try:
+        repo = MongoDiseaseRepository()
+    except Exception as e:
+        st.error(f"Database connection failed: {e}")
+        return
 
+    # --- STEP 2: Handle Initial Analysis ---
     if analyze_button and patient_text:
         with st.spinner("🔄 Analyzing patient data..."):
-            skin_result = None
             try:
-                repo = MongoDiseaseRepository()
                 assistant = VeterinaryAIAssistant(repo)
                 
                 # Handle Image Analysis
+                skin_result = None
+                image_path = None
+                
                 if uploaded_image:
                     image_path = save_temp_image(uploaded_image)
                     if image_path:
@@ -588,143 +601,200 @@ def show_diagnosis_page():
                         if assistant.skin_adapter and not assistant.skin_adapter.available:
                             st.info("🧪 Skin disease AI is optional and not installed on this system.")
                 
-                result = assistant.analyze_patient_text(
+                # STEP 2 LOGIC: Run Analysis without questions, store state
+                analysis = assistant.analyze_patient_text(
                     patient_text,
-                    generate_questions=generate_questions,
+                    generate_questions=False  # IMPORTANT
                 )
 
-                st.success("✅ Analysis Complete!")
+                state = st.session_state.consultation
+                state["patient_info"] = analysis["patient_analysis"].patient_info
+                state["symptoms"] = analysis["patient_analysis"].symptoms
+                state["diseases"] = analysis.get("disease_extractions", []) 
+                state["matches"] = analysis.get("database_matches", [])
                 
-                # -----------------------------
-                # Patient Info
-                # -----------------------------
-                st.markdown("### 👤 Patient Information")
-                patient_info = result['patient_analysis'].patient_info
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Species", patient_info.animal_type or "Unknown")
-                with col2:
-                    st.metric("Age", patient_info.age or "Unknown")
-                with col3:
-                    st.metric("Breed", patient_info.breed or "Unknown")
-                with col4:
-                    st.metric("Weight", patient_info.weight or "Unknown")
+                # Fix 2: Assign image_path to state
+                state["image_path"] = image_path
+                
+                # Store image data if present
+                state["skin_result"] = skin_result
+                
+                # Fix 1: Move cleanup BEFORE rerun
+                for k in list(st.session_state.keys()):
+                    if k.startswith("answer_"):
+                        del st.session_state[k]
 
-                # -----------------------------
-                # Skin Image Analysis Display
-                # -----------------------------
-                if uploaded_image and skin_result:
-                    st.markdown("## 🧬 Skin Image Analysis (AI-assisted)")
-
-                    st.markdown(
-                        f"""
-                        **Predicted condition:** `{skin_result['prediction']}`  
-                        **Model confidence:** `{skin_result['confidence']:.2%}`
-                        """
-                    )
-
-                    st.info(
-                        "This result is AI-assisted and used as supporting evidence. "
-                        "Final diagnosis depends on clinical symptoms and database correlation."
-                    )
-
-                # -----------------------------
-                # Symptoms
-                # -----------------------------
-                st.markdown("### 🩺 Detected Symptoms")
-                symptoms = result['patient_analysis'].symptoms
-                if symptoms:
-                    cols = st.columns(3)
-                    for idx, symptom in enumerate(symptoms):
-                        with cols[idx % 3]:
-                            severity_class = f"severity-{symptom.severity}" if symptom.severity else "severity-mild"
-                            st.markdown(f"""
-                            <div class="info-card">
-                            <strong>{symptom.symptom}</strong><br>
-                            <span class="severity-badge {severity_class}">
-                            {symptom.severity or 'Unknown'}
-                            </span><br>
-                            <small>Duration: {symptom.duration or 'Not specified'}</small>
-                            </div>
-                            """, unsafe_allow_html=True)
-                else:
-                    st.info("No specific symptoms detected.")
-
-                # -----------------------------
-                # Disease Matches
-                # -----------------------------
-                st.markdown("### 🎯 Possible Diagnoses")
-                matches = result['database_matches']
-                if matches:
-                    for disease in matches[:5]:
-                        severity_class = f"severity-{disease['severity']}"
-                        st.markdown(f"""
-                        <div class="disease-card">
-                        <h4>{disease['name']}</h4>
-                        <span class="severity-badge {severity_class}">
-                        {disease['severity']}
-                        </span>
-                        <p><strong>Scientific Name:</strong> {disease['scientific_name']}</p>
-                        <p><strong>Description:</strong> {disease['description']}</p>
-                        <p><strong>Treatment:</strong> {disease['treatment']}</p>
-                        <p><strong>Prevention:</strong> {disease['prevention']}</p>
-                        <p><strong>Affected Species:</strong> {', '.join(disease['affected_species'])}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.warning("⚠️ No matching diseases found in database.")
-
-                # -----------------------------
-                # Recommendations
-                # -----------------------------
-                st.markdown("### 💡 Recommendations")
-                recommendations = result['recommendations']
-                urgency_colors = {
-                    "routine": "🟢",
-                    "moderate": "🟡",
-                    "urgent": "🔴"
-                }
-                urgency_icon = urgency_colors.get(recommendations['urgency'], "🟡")
-                st.markdown(
-                    f"**Urgency Level:** {urgency_icon} {recommendations['urgency'].upper()}"
-                )
-
-                st.markdown("**Recommended Actions:**")
-                for action in recommendations['recommended_actions']:
-                    st.markdown(f"- {action}")
-
-                # -----------------------------
-                # Follow-up Questions
-                # -----------------------------
-                if generate_questions and result.get('follow_up_questions'):
-                    st.markdown("### ❓ Follow-up Questions")
-
-                    for i, question in enumerate(result['follow_up_questions'][:10], 1):
-                        with st.container():
-                            st.markdown(
-                                f"**Q{i}: {question.question}**  \n"
-                                f"*Category:* {question.category} | "
-                                f"*Priority:* {'⭐' * question.priority}"
-                            )
-
-                            with st.expander("Why is this question asked?"):
-                                st.markdown(f"**Clinical reasoning:** {question.reasoning}")
+                st.success("✅ Initial Analysis Complete!")
+                st.rerun()
 
             except Exception as e:
                 st.error(f"❌ Error during analysis: {e}")
                 st.exception(e)
 
-    elif analyze_button:
-        st.warning("⚠️ Please enter patient description.")
+    # --- DISPLAY ANALYSIS RESULTS (Stateful) ---
+    # Only show results if analysis has been run (patient_info exists)
+    state = st.session_state.consultation
+    
+    if state["patient_info"]:
+        # Patient Info
+        st.markdown("### 👤 Patient Information")
+        patient_info = state["patient_info"]
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Species", patient_info.animal_type or "Unknown")
+        with col2:
+            st.metric("Age", patient_info.age or "Unknown")
+        with col3:
+            st.metric("Breed", patient_info.breed or "Unknown")
+        with col4:
+            st.metric("Weight", patient_info.weight or "Unknown")
+
+        # Skin Image Analysis
+        if state["skin_result"]:
+            skin_result = state["skin_result"]
+            st.markdown("## 🧬 Skin Image Analysis (AI-assisted)")
+            st.markdown(f"**Predicted condition:** `{skin_result['prediction']}`")
+            st.markdown(f"**Model confidence:** `{skin_result['confidence']:.2%}`")
+            st.info("This result is AI-assisted and used as supporting evidence.")
+
+        # Symptoms
+        st.markdown("### 🩺 Detected Symptoms")
+        symptoms = state["symptoms"]
+        if symptoms:
+            cols = st.columns(3)
+            for idx, symptom in enumerate(symptoms):
+                with cols[idx % 3]:
+                    severity_class = f"severity-{symptom.severity}" if symptom.severity else "severity-mild"
+                    st.markdown(f"""
+                    <div class="info-card">
+                    <strong>{symptom.symptom}</strong><br>
+                    <span class="severity-badge {severity_class}">
+                    {symptom.severity or 'Unknown'}
+                    </span><br>
+                    <small>Duration: {symptom.duration or 'Not specified'}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.info("No specific symptoms detected.")
+        
+        # --- STEP 3 & 4: Ask ONE follow-up question ---
+        st.markdown("---")
+        st.markdown("### ❓ Follow-up Question")
+
+        # Initialize Generator
+        generator = FollowUpQuestionGenerator(repo)
+        
+        # Get next question based on CURRENT state
+        next_q = generator.get_next_question(
+            state["patient_info"],
+            state["symptoms"],
+            state["diseases"]
+        )
+
+        # Fix 4: Check if question exists AND if it hasn't been answered yet
+        if next_q and next_q.question not in state["answers"]:
+            answer = st.text_input(
+                next_q.question,
+                key=f"answer_{hash(next_q.question)}"
+            )
+
+            if st.button("Submit Answer", key="consultation_submit_btn"):
+                # Update symptoms based on answer
+                apply_answer(state["symptoms"], next_q, answer)
+                
+                # Store the answer history
+                state["answers"][next_q.question] = answer
+
+                # Reconstruct text for re-analysis
+                symptom_text = " ".join(
+                    f"{s.symptom} {s.severity or ''} {s.duration or ''}"
+                    for s in state["symptoms"]
+                )
+
+                # Re-run disease analysis with updated symptoms
+                assistant = VeterinaryAIAssistant(repo)
+                
+                analysis = assistant.analyze_patient_text(
+                    symptom_text,
+                    generate_questions=False
+                )
+
+                # Update state with new data
+                state["diseases"] = analysis.get("disease_extractions", [])
+                state["matches"] = analysis.get("database_matches", [])
+
+                st.rerun()
+        else:
+            st.success("✅ Sufficient information collected.")
+            if st.button("Start New Consultation"):
+                # Clear consultation state
+                st.session_state.consultation = {
+                    "patient_info": None,
+                    "symptoms": [],
+                    "diseases": [],
+                    "matches": [],
+                    "image_path": None,
+                    "skin_result": None,
+                    "answers": {}
+                }
+                st.rerun()
+
+        # Diseases
+        st.markdown("### 🎯 Possible Diagnoses")
+        matches = state["matches"]
+        if matches:
+            for disease in matches[:5]:
+                severity_class = f"severity-{disease['severity']}"
+                st.markdown(f"""
+                <div class="disease-card">
+                <h4>{disease['name']}</h4>
+                <span class="severity-badge {severity_class}">
+                {disease['severity']}
+                </span>
+                <p><strong>Scientific Name:</strong> {disease['scientific_name']}</p>
+                <p><strong>Description:</strong> {disease['description']}</p>
+                <p><strong>Treatment:</strong> {disease['treatment']}</p>
+                <p><strong>Prevention:</strong> {disease['prevention']}</p>
+                <p><strong>Affected Species:</strong> {', '.join(disease['affected_species'])}</p>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ No matching diseases found in database.")
+
+        # Recommendations
+        st.markdown("### 💡 Recommendations")
+        urgency = "routine"
+        if matches:
+            top_disease = matches[0]
+            urgency = top_disease.get('severity', 'routine')
+            
+        urgency_colors = {
+            "mild": "🟢",
+            "moderate": "🟡",
+            "severe": "🔴"
+        }
+        urgency_icon = urgency_colors.get(urgency, "🟡")
+        st.markdown(f"**Urgency Level:** {urgency_icon} {urgency.upper()}")
+        
+        st.markdown("**Recommended Actions:**")
+        if urgency == "severe":
+            st.markdown("- Seek immediate veterinary attention.")
+            st.markdown("- Monitor vital signs closely.")
+        elif urgency == "moderate":
+            st.markdown("- Schedule a veterinary appointment within 24-48 hours.")
+            st.markdown("- Monitor for worsening symptoms.")
+        else:
+            st.markdown("- Continue monitoring the patient at home.")
+            st.markdown("- Maintain current care routine.")
+
 
 
 def show_database_page():
     st.markdown("## 📚 Disease Database")
 
     try:
-        mongo_url = os.getenv('MONGO_URL')
-        db_name = os.getenv('MONGO_DB_NAME', 'veterinary_ai_db')
-        db = VeterinaryDatabase(mongo_url=mongo_url, db_name=db_name)
+        # Use get_db to access raw connection instead of undefined class
+        db = get_db()
 
         # Search
         col1, col2 = st.columns([3, 1])
@@ -774,9 +844,8 @@ def show_history_page():
     st.markdown("## 📊 Analysis History")
 
     try:
-        from user_database import UserDatabase
-        db = UserDatabase()
-        records = db.get_user_history(st.session_state.username)
+        db = get_db()
+        records = list(db.analysis_history.find({"username": st.session_state.username}).sort("created_at", -1))
     except Exception as e:
         st.error(f"❌ Could not load history from database: {e}")
         records = []
