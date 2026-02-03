@@ -16,6 +16,8 @@ from user_database import UserDatabase, get_db
 from mongo_disease_repository import MongoDiseaseRepository
 from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
+from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
+from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
@@ -265,7 +267,8 @@ def init_session_state():
             "matches": [], # To store full DB matches for display
             "image_path": None,
             "skin_result": None,
-            "answers": {}
+            "answers": {},
+            "disease_ranker": None  # For AI-powered dynamic confidence updates
         }
 
     for key, value in defaults.items():
@@ -613,6 +616,10 @@ def show_diagnosis_page():
                 state["diseases"] = analysis.get("disease_extractions", []) 
                 state["matches"] = analysis.get("database_matches", [])
                 
+                # Initialize dynamic disease ranker for AI-powered prioritization
+                if state["matches"]:
+                    state["disease_ranker"] = DynamicDiseaseRanker(state["matches"])
+                
                 # Fix 2: Assign image_path to state
                 state["image_path"] = image_path
                 
@@ -704,24 +711,47 @@ def show_diagnosis_page():
                 
                 # Store the answer history
                 state["answers"][next_q.question] = answer
-
-                # Reconstruct text for re-analysis
-                symptom_text = " ".join(
-                    f"{s.symptom} {s.severity or ''} {s.duration or ''}"
-                    for s in state["symptoms"]
-                )
-
-                # Re-run disease analysis with updated symptoms
-                assistant = VeterinaryAIAssistant(repo)
                 
-                analysis = assistant.analyze_patient_text(
-                    symptom_text,
-                    generate_questions=False
-                )
-
-                # Update state with new data
-                state["diseases"] = analysis.get("disease_extractions", [])
-                state["matches"] = analysis.get("database_matches", [])
+                # Use AI-powered dynamic confidence updates
+                if state["disease_ranker"]:
+                    # Determine answer type and category
+                    answer_lower = answer.lower()
+                    is_symptom_confirmed = any(word in answer_lower for word in ['yes', 'has', 'showing', 'present'])
+                    is_symptom_ruled_out = any(word in answer_lower for word in ['no', 'not', 'never', 'none'])
+                    
+                    # Extract symptom from question
+                    symptom_keywords = ['vomiting', 'diarrhea', 'fever', 'lethargy', 'coughing', 'limping', 'seizure']
+                    mentioned_symptom = next((kw for kw in symptom_keywords if kw in next_q.question.lower()), None)
+                    
+                    # Create answer object for AI processing
+                    follow_up_answer = FollowUpAnswer(
+                        question=next_q.question,
+                        answer=answer,
+                        category=next_q.category if hasattr(next_q, 'category') else 'symptom_details',
+                        symptom_confirmed=is_symptom_confirmed,
+                        symptom_ruled_out=is_symptom_ruled_out,
+                        mentioned_symptom=mentioned_symptom,
+                        severity_level=answer if 'severe' in answer.lower() else None
+                    )
+                    
+                    # Update disease rankings with AI
+                    updated_diseases = state["disease_ranker"].update_confidence_with_answer(follow_up_answer)
+                    state["matches"] = updated_diseases
+                    
+                    st.info(f"🧠 AI updated disease priorities based on your answer!")
+                else:
+                    # Fallback: Re-run disease analysis
+                    symptom_text = " ".join(
+                        f"{s.symptom} {s.severity or ''} {s.duration or ''}"
+                        for s in state["symptoms"]
+                    )
+                    assistant = VeterinaryAIAssistant(repo)
+                    analysis = assistant.analyze_patient_text(
+                        symptom_text,
+                        generate_questions=False
+                    )
+                    state["diseases"] = analysis.get("disease_extractions", [])
+                    state["matches"] = analysis.get("database_matches", [])
 
                 st.rerun()
         else:

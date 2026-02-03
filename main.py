@@ -1,9 +1,12 @@
 from mongo_disease_repository import MongoDiseaseRepository
 from nlp_patient_analyzer import VeterinaryNLPAnalyzer, AnalysisResult
 from follow_up_questions import FollowUpQuestionGenerator
+from custom_ai_followup import CustomAIFollowUpGenerator, AIFollowUpQuestion
+from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer, AdaptiveQuestionGenerator
 from ava.skin_disease.adapter import SkinDiseaseAdapter
-from typing import Dict, List
+from typing import Dict, List, Optional
 import json
+import os
 
 
 class VeterinaryAIAssistant:
@@ -17,18 +20,38 @@ class VeterinaryAIAssistant:
     - Optional skin disease ML inference
     """
 
-    def __init__(self, disease_repo: MongoDiseaseRepository | None = None):
+    def __init__(self, disease_repo: MongoDiseaseRepository | None = None, use_ai_questions: bool = True):
         # NLP
         self.analyzer = VeterinaryNLPAnalyzer()
 
         # Mongo disease repository
         self.disease_repo = disease_repo or MongoDiseaseRepository()
 
-        # Follow-up questions (Mongo-backed)
+        # Follow-up questions - Choose between AI or Template-based
+        self.use_ai_questions = use_ai_questions
+        
+        # Template-based (fallback)
         self.question_generator = FollowUpQuestionGenerator(self.disease_repo)
+        
+        # Custom AI-powered question generator (trained model)
+        try:
+            if use_ai_questions:
+                self.ai_question_generator = CustomAIFollowUpGenerator()
+                print("✅ Custom AI-powered question generation ENABLED (local model)")
+            else:
+                self.ai_question_generator = None
+                print("⚠️  AI question generation disabled - using template-based questions")
+        except Exception as e:
+            self.ai_question_generator = None
+            print(f"⚠️  Custom AI model unavailable: {e}")
+            print("   Falling back to template-based questions")
+            print("   To enable: cd ml_training/vet_followup_qa && python train.py")
 
         # Optional skin disease ML adapter
         self.skin_adapter = SkinDiseaseAdapter()
+        
+        # Dynamic disease ranker for confidence updates
+        self.disease_ranker = None  # Initialized after first analysis
 
     # ------------------------------------------------------------------
     # OPTIONAL ML: SKIN DISEASE ANALYSIS
@@ -49,28 +72,44 @@ class VeterinaryAIAssistant:
     def analyze_patient_text(
         self,
         patient_text: str,
-        generate_questions: bool = True
+        generate_questions: bool = True,
+        previous_answers: Dict = None
     ) -> Dict:
         """
         Full text-based patient analysis pipeline.
+        Now with AI-powered or template-based follow-up questions.
+        
+        Args:
+            patient_text: Patient description from user
+            generate_questions: Whether to generate follow-up questions
+            previous_answers: Dict of previously answered questions (for AI context)
         """
 
         # Step 1: NLP
         analysis: AnalysisResult = self.analyzer.analyze(patient_text)
 
-        # Step 2: MongoDB disease search
+        # Step 2: MongoDB disease search with improved scoring
         related_diseases = self._search_for_related_diseases(analysis)
 
-        # Step 3: Follow-up questions
+        # Step 3: Follow-up questions (AI or Template-based)
         questions = []
         if generate_questions:
             limit = self._decide_question_limit(related_diseases)
-            questions = self.question_generator.generate_questions(
-                analysis.patient_info,
-                analysis.symptoms,
-                analysis.suspected_diseases,
-                max_questions=limit
-            )
+            
+            # Try AI-generated questions first
+            if self.ai_question_generator:
+                questions = self._generate_ai_questions(
+                    analysis, related_diseases, limit, previous_answers
+                )
+            
+            # Fallback to template-based questions if AI fails or unavailable
+            if not questions:
+                questions = self.question_generator.generate_questions(
+                    analysis.patient_info,
+                    analysis.symptoms,
+                    analysis.suspected_diseases,
+                    max_questions=limit
+                )
 
         return {
             "patient_analysis": analysis,
@@ -78,7 +117,8 @@ class VeterinaryAIAssistant:
             "follow_up_questions": questions,
             "recommendations": self._generate_recommendations(
                 analysis, related_diseases
-            )
+            ),
+            "question_source": "ai" if (self.ai_question_generator and questions) else "template"
         }
 
     # ------------------------------------------------------------------
@@ -103,10 +143,66 @@ class VeterinaryAIAssistant:
                 "severity": d.get("severity"),
                 "affected_species": d.get("affected_species", []),
                 "confidence": d.get("match_score", d.get("confidence", 0.0)),
-
+                "symptom_match_count": d.get("symptom_match_count", 0)
             })
 
         return results[:5]
+    
+    # ------------------------------------------------------------------
+    # AI QUESTION GENERATION
+    # ------------------------------------------------------------------
+    def _generate_ai_questions(
+        self,
+        analysis: AnalysisResult,
+        related_diseases: List[Dict],
+        limit: int,
+        previous_answers: Dict = None
+    ) -> List:
+        """Generate AI-powered follow-up questions"""
+        try:
+            # Convert analysis objects to dicts for AI
+            patient_dict = {
+                "animal_type": analysis.patient_info.animal_type,
+                "age": analysis.patient_info.age,
+                "breed": analysis.patient_info.breed,
+                "weight": analysis.patient_info.weight,
+                "gender": analysis.patient_info.gender
+            }
+            
+            symptoms_dict = [
+                {
+                    "symptom": s.symptom,
+                    "duration": s.duration,
+                    "severity": s.severity,
+                    "frequency": s.frequency,
+                    "context": s.context
+                }
+                for s in analysis.symptoms
+            ]
+            
+            suspected_dict = [
+                {
+                    "disease_name": d.disease_name,
+                    "confidence": d.confidence
+                }
+                for d in analysis.suspected_diseases
+            ]
+            
+            # Generate AI questions
+            ai_questions = self.ai_question_generator.generate_questions(
+                patient_info=patient_dict,
+                symptoms=symptoms_dict,
+                suspected_diseases=suspected_dict,
+                database_matches=related_diseases,
+                max_questions=limit,
+                previous_answers=previous_answers
+            )
+            
+            return ai_questions
+            
+        except Exception as e:
+            print(f"⚠️  AI question generation failed: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # QUESTION LIMIT LOGIC
@@ -232,6 +328,80 @@ class VeterinaryAIAssistant:
         ]
 
     # ------------------------------------------------------------------
+    # DYNAMIC CONFIDENCE UPDATING
+    # ------------------------------------------------------------------
+    
+    def update_diagnosis_with_answer(
+        self,
+        question: str,
+        answer: str,
+        category: str = "general",
+        related_disease: str = None,
+        symptom_to_check: str = None
+    ) -> Dict:
+        """
+        Update disease confidence based on follow-up answer.
+        Implements feedback loop for continuous refinement.
+        
+        Args:
+            question: The follow-up question that was asked
+            answer: User's answer to the question
+            category: Question category (disease_confirmation, symptom_details, etc.)
+            related_disease: Which disease this question relates to
+            symptom_to_check: Specific symptom being checked
+            
+        Returns:
+            Updated disease rankings and explanation
+        """
+        if not self.disease_ranker:
+            return {
+                "error": "No active diagnosis session. Run analyze_patient_text first.",
+                "diseases": []
+            }
+        
+        # Create answer object
+        follow_up_answer = FollowUpAnswer(
+            question=question,
+            answer=answer,
+            category=category,
+            related_disease=related_disease,
+            symptom_to_check=symptom_to_check
+        )
+        
+        # Update confidence scores
+        updated_diseases = self.disease_ranker.update_confidence_with_answer(follow_up_answer)
+        
+        # Generate explanation
+        explanation = self.disease_ranker.explain_ranking()
+        
+        # Get next best questions
+        patient_symptoms = [d.get('symptom_match_count', 0) for d in updated_diseases]
+        adaptive_gen = AdaptiveQuestionGenerator(self.disease_ranker, self.disease_repo)
+        next_questions = adaptive_gen.get_next_best_questions([], max_questions=3)
+        
+        return {
+            "updated_diseases": updated_diseases,
+            "explanation": explanation,
+            "next_questions": next_questions,
+            "answer_processed": True
+        }
+    
+    def start_dynamic_diagnosis_session(self, initial_diseases: List[Dict]):
+        """
+        Initialize dynamic disease ranker for a consultation session
+        
+        Args:
+            initial_diseases: Initial disease matches from analyze_patient_text
+        """
+        # Store initial confidence for tracking
+        for disease in initial_diseases:
+            disease['initial_confidence'] = disease.get('confidence', 0.0)
+        
+        self.disease_ranker = DynamicDiseaseRanker(initial_diseases)
+        print("✅ Dynamic diagnosis session started")
+        print(f"   Tracking {len(initial_diseases)} diseases")
+
+    # ------------------------------------------------------------------
     # REPORTING
     # ------------------------------------------------------------------
 
@@ -250,7 +420,7 @@ class VeterinaryAIAssistant:
                 "matches": analysis_result["database_matches"],
                 "recommendations": analysis_result["recommendations"],
                 "follow_up_questions": [
-                    q.question
+                    q.question if hasattr(q, 'question') else str(q)
                     for q in analysis_result["follow_up_questions"]
                 ],
             },
