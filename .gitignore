@@ -38,3 +38,25 @@ ava/runtime/**/uploads/
 # Test artifacts
 # --------------------
 test_image.jpeg
+# Documentation (keep out of repo)
+*_SUMMARY.md
+*_COMPLETION.md
+*_PLAN.md
+*_SCRIPT.md
+*_REFERENCE.md
+*_ANALYSIS.md
+ALL_FIXED_SUMMARY.md
+ANIMAL_EXPANSION_COMPLETE.md
+AVA_90_PERCENT_COMPLETION.md
+CHANGES_IMPACT_ANALYSIS.md
+COMPLETION_PLAN.md
+DEMO_SCRIPT.md
+QUICK_REFERENCE.md
+
+# ML models (too large)
+*.pth
+*.7z
+ml_training.7z
+
+# Docs material folder
+docs material/
