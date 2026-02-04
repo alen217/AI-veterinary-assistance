@@ -781,12 +781,27 @@ def show_diagnosis_page():
                     if state["disease_ranker"]:
                         # Determine answer type and category
                         answer_lower = answer.lower()
-                        is_symptom_confirmed = any(word in answer_lower for word in ['yes', 'has', 'showing', 'present'])
-                        is_symptom_ruled_out = any(word in answer_lower for word in ['no', 'not', 'never', 'none'])
+                        is_symptom_confirmed = any(word in answer_lower for word in ['yes', 'has', 'showing', 'present', 'experiencing'])
+                        is_symptom_ruled_out = any(word in answer_lower for word in ['no', 'not', 'never', 'none', 'hasn\'t'])
                         
-                        # Extract symptom from question
-                        symptom_keywords = ['vomiting', 'diarrhea', 'fever', 'lethargy', 'coughing', 'limping', 'seizure']
+                        # Extract symptom from question - comprehensive list
+                        symptom_keywords = [
+                            'vomiting', 'diarrhea', 'fever', 'lethargy', 'coughing', 'limping', 'seizure',
+                            'appetite', 'drinking', 'discharge', 'scratching', 'licking', 'skin',
+                            'weight', 'energy', 'breathing', 'pain', 'swelling', 'bleeding',
+                            'loss_of_appetite', 'dehydration', 'itching', 'skin_lesion'
+                        ]
                         mentioned_symptom = next((kw for kw in symptom_keywords if kw in next_q.question.lower()), None)
+                        
+                        # Try to extract symptom from state diseases for better matching
+                        symptom_to_check = mentioned_symptom
+                        if not symptom_to_check and state["matches"]:
+                            # Check if question relates to common symptoms of top disease
+                            top_disease = state["matches"][0]
+                            for sym in top_disease.get('common_symptoms', []):
+                                if sym.replace('_', ' ') in next_q.question.lower():
+                                    symptom_to_check = sym
+                                    break
                         
                         # Create answer object for AI processing
                         follow_up_answer = FollowUpAnswer(
@@ -796,6 +811,7 @@ def show_diagnosis_page():
                             symptom_confirmed=is_symptom_confirmed,
                             symptom_ruled_out=is_symptom_ruled_out,
                             mentioned_symptom=mentioned_symptom,
+                            symptom_to_check=symptom_to_check,
                             severity_level=answer if 'severe' in answer.lower() else None
                         )
                         

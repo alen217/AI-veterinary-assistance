@@ -16,6 +16,10 @@ class FollowUpAnswer:
     category: str
     related_disease: str = None
     symptom_to_check: str = None
+    symptom_confirmed: bool = False
+    symptom_ruled_out: bool = False
+    mentioned_symptom: str = None
+    severity_level: str = None
 
 
 class DynamicDiseaseRanker:
@@ -62,32 +66,37 @@ class DynamicDiseaseRanker:
     
     def _update_for_disease_confirmation(self, answer: FollowUpAnswer):
         """Update when checking for specific disease symptoms"""
-        if not answer.related_disease or answer.related_disease not in self.diseases:
-            return
-        
-        disease = self.diseases[answer.related_disease]
-        current_conf = disease.get('confidence', 0.5)
-        
-        # Check if answer confirms the symptom
+        # Use symptom_confirmed/ruled_out from answer if available
         answer_lower = answer.answer.lower()
-        is_positive = any(word in answer_lower for word in ['yes', 'yeah', 'present', 'has', 'showing'])
-        is_negative = any(word in answer_lower for word in ['no', 'not', 'never', 'none'])
+        is_positive = answer.symptom_confirmed or any(word in answer_lower for word in ['yes', 'yeah', 'present', 'has', 'showing'])
+        is_negative = answer.symptom_ruled_out or any(word in answer_lower for word in ['no', 'not', 'never', 'none'])
         
-        if is_positive and answer.symptom_to_check:
-            # Symptom confirmed - BOOST confidence significantly
-            boost = 0.15  # 15% boost
-            new_conf = min(1.0, current_conf + boost)
-            disease['confidence'] = new_conf
-            disease['matched_additional_symptoms'] = disease.get('matched_additional_symptoms', [])
-            disease['matched_additional_symptoms'].append(answer.symptom_to_check)
-            print(f"✅ Boosted {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
+        # Get the symptom being checked
+        symptom_checked = answer.symptom_to_check or answer.mentioned_symptom
+        
+        # Update all diseases that have this symptom
+        for disease_name, disease in self.diseases.items():
+            disease_symptoms = disease.get('common_symptoms', [])
             
-        elif is_negative and answer.symptom_to_check:
-            # Symptom NOT present - REDUCE confidence
-            penalty = 0.10  # 10% penalty
-            new_conf = max(0.0, current_conf - penalty)
-            disease['confidence'] = new_conf
-            print(f"⬇️  Reduced {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
+            if symptom_checked and symptom_checked in disease_symptoms:
+                current_conf = disease.get('confidence', 0.5)
+                
+                if is_positive:
+                    # Symptom confirmed - BOOST confidence significantly
+                    boost = 0.15  # 15% boost
+                    new_conf = min(1.0, current_conf + boost)
+                    disease['confidence'] = new_conf
+                    disease['matched_additional_symptoms'] = disease.get('matched_additional_symptoms', [])
+                    if symptom_checked not in disease['matched_additional_symptoms']:
+                        disease['matched_additional_symptoms'].append(symptom_checked)
+                    print(f"✅ Boosted {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
+                    
+                elif is_negative:
+                    # Symptom NOT present - REDUCE confidence
+                    penalty = 0.10  # 10% penalty
+                    new_conf = max(0.0, current_conf - penalty)
+                    disease['confidence'] = new_conf
+                    print(f"⬇️  Reduced {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
     
     def _update_for_symptom_details(self, answer: FollowUpAnswer):
         """Update based on symptom severity/duration details"""
