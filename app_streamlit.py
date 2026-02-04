@@ -18,6 +18,15 @@ from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
 from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
 
+# Try to load AI-powered question generator
+try:
+    from custom_ai_followup import CustomAIFollowUpGenerator
+    AI_MODEL_AVAILABLE = True
+    print("✅ Custom AI follow-up model loaded successfully")
+except Exception as e:
+    AI_MODEL_AVAILABLE = False
+    print(f"⚠️  Using template-based questions (AI model not available: {e})")
+
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
 load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
@@ -268,7 +277,10 @@ def init_session_state():
             "skin_result": None,
             "answers": {},
             "disease_ranker": None,  # For AI-powered dynamic confidence updates
-            "follow_up_questions": []
+            "follow_up_questions": [],
+            "questions_asked": 0,  # Track number of questions
+            "max_questions": 8,  # Maximum questions before stopping
+            "confidence_threshold": 0.85  # Stop when top disease reaches this
         }
 
     for key, value in defaults.items():
@@ -444,9 +456,18 @@ def show_admin_panel():
         st.info(f"**Connection:** {'✅ Configured' if mongo_url != 'Not configured' else '❌ Not configured'}")
 
         st.markdown("#### Application Info")
-        st.write("**Version:** 1.0.0")
-        st.write("**AI Model:** NLP + MongoDB")
-        st.write("**Last Updated:** December 2025")
+        st.write("**Version:** 2.0.0")
+        st.write("**AI Model:** Custom Neural Network + MongoDB")
+        st.write("**Last Updated:** February 2026")
+        
+        st.markdown("---")
+        st.markdown("#### AI Follow-Up System")
+        if AI_MODEL_AVAILABLE:
+            st.success("✅ AI Model Active - Using Neural Network for Questions")
+            st.info("The AI automatically narrows down diseases through intelligent follow-up questions.")
+        else:
+            st.error("❌ AI Model Not Available - Fallback to Templates")
+            st.warning("For best results, train the model:\n```bash\ncd ml_training/vet_followup_qa\npython train.py\n```")
 
 
 def show_main_app():
@@ -745,32 +766,123 @@ def show_diagnosis_page():
         else:
             st.info("No specific symptoms detected.")
         
-        # --- STEP 3 & 4: Ask ONE follow-up question ---
+        # --- STEP 3 & 4: AI-Powered Follow-up Questions ---
         st.markdown("---")
-        st.markdown("### ❓ Follow-up Question")
-
-        # Initialize Generator
-        generator = FollowUpQuestionGenerator(repo)
+        st.markdown("### 🤖 AI Follow-up Analysis")
         
-        # Get next question based on CURRENT state
-        next_q = generator.get_next_question(
-            state["patient_info"],
-            state["symptoms"],
-            state["diseases"]
+        # Check stopping conditions
+        top_disease_confidence = state["matches"][0]['confidence'] if state["matches"] else 0
+        questions_asked = state.get("questions_asked", 0)
+        max_questions = state.get("max_questions", 8)
+        confidence_threshold = state.get("confidence_threshold", 0.85)
+        
+        # Display progress
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Questions Asked", f"{questions_asked}/{max_questions}")
+        with col2:
+            st.metric("Top Confidence", f"{top_disease_confidence:.1%}")
+        with col3:
+            st.metric("Target Confidence", f"{confidence_threshold:.1%}")
+        
+        # Determine if we should continue asking questions
+        should_continue = (
+            questions_asked < max_questions and 
+            top_disease_confidence < confidence_threshold and
+            len(state["matches"]) > 1
         )
+        
+        next_q = None
+        
+        if should_continue:
+            # FORCE AI MODEL USAGE
+            if AI_MODEL_AVAILABLE:
+                try:
+                    # Initialize AI generator if not already done
+                    if 'ai_generator' not in st.session_state:
+                        st.session_state.ai_generator = CustomAIFollowUpGenerator()
+                        st.success("✅ AI Model Initialized Successfully")
+                    
+                    # Prepare data for AI model
+                    patient_dict = {
+                        'animal_type': state["patient_info"].animal_type,
+                        'age': state["patient_info"].age,
+                        'breed': state["patient_info"].breed,
+                        'weight': state["patient_info"].weight
+                    }
+                    
+                    symptoms_dict = [
+                        {
+                            'symptom': s.symptom,
+                            'severity': s.severity,
+                            'duration': s.duration
+                        } for s in state["symptoms"]
+                    ]
+                    
+                    diseases_dict = [
+                        {
+                            'disease_name': d.disease_name if hasattr(d, 'disease_name') else d.get('name', ''),
+                            'confidence': d.confidence if hasattr(d, 'confidence') else d.get('confidence', 0)
+                        } for d in state["diseases"]
+                    ]
+                    
+                    # Generate AI questions
+                    ai_questions = st.session_state.ai_generator.generate_questions(
+                        patient_info=patient_dict,
+                        symptoms=symptoms_dict,
+                        suspected_diseases=diseases_dict,
+                        database_matches=state["matches"],
+                        max_questions=1,
+                        previous_answers=state.get("answers", {})
+                    )
+                    
+                    if ai_questions:
+                        ai_q = ai_questions[0]
+                        # Convert AI question to FollowUpQuestion format
+                        from follow_up_questions import FollowUpQuestion
+                        next_q = FollowUpQuestion(
+                            category=ai_q.category,
+                            question=ai_q.question,
+                            priority=ai_q.priority,
+                            reasoning=ai_q.reasoning
+                        )
+                        st.info(f"💡 **AI Strategy:** {ai_q.reasoning}")
+                    
+                except Exception as ai_error:
+                    st.error(f"⚠️ AI Error: {ai_error}")
+                    # Fallback to templates
+                    generator = FollowUpQuestionGenerator(repo)
+                    next_q = generator.get_next_question(
+                        state["patient_info"],
+                        state["symptoms"],
+                        state["diseases"]
+                    )
+            else:
+                # Fallback if AI not available
+                st.warning("⚠️ Using template-based questions (AI model not loaded)")
+                generator = FollowUpQuestionGenerator(repo)
+                next_q = generator.get_next_question(
+                    state["patient_info"],
+                    state["symptoms"],
+                    state["diseases"]
+                )
 
-        # Fix 4: Check if question exists AND if it hasn't been answered yet
+        # Check if question exists AND if it hasn't been answered yet
         if next_q and next_q.question not in state["answers"]:
+            st.markdown(f"**Question {questions_asked + 1}:**")
             answer = st.text_input(
                 next_q.question,
-                key=f"answer_{hash(next_q.question)}"
+                key=f"answer_{hash(next_q.question)}",
+                placeholder="Type your answer here..."
             )
 
-            if st.button("Submit Answer", key="consultation_submit_btn"):
+            if st.button("✅ Submit Answer", key="consultation_submit_btn", use_container_width=True):
                 # Validate answer is not empty
                 if not answer or answer.strip() == "":
                     st.warning("⚠️ Please provide an answer before submitting.")
                 else:
+                    # Increment question counter
+                    state["questions_asked"] = state.get("questions_asked", 0) + 1
                     # Update symptoms based on answer
                     apply_answer(state["symptoms"], next_q, answer)
                     
@@ -836,8 +948,29 @@ def show_diagnosis_page():
 
                     st.rerun()
         else:
-            st.success("✅ Sufficient information collected.")
-            if st.button("Start New Consultation"):
+            # Diagnosis complete
+            st.markdown("---")
+            if top_disease_confidence >= confidence_threshold:
+                st.success(f"✅ **Diagnosis Complete!** Achieved {top_disease_confidence:.1%} confidence")
+                st.balloons()
+            elif questions_asked >= max_questions:
+                st.info(f"📊 **Analysis Complete** - Maximum questions reached ({max_questions})")
+            elif len(state["matches"]) == 1:
+                st.success("✅ **Single Disease Identified!**")
+            else:
+                st.info("✅ **Sufficient Information Collected**")
+            
+            # Show summary stats
+            st.markdown("### 📈 Consultation Summary")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Questions", questions_asked)
+            with col2:
+                st.metric("Final Confidence", f"{top_disease_confidence:.1%}")
+            with col3:
+                st.metric("Diseases Analyzed", len(state["matches"]))
+            
+            if st.button("🔄 Start New Consultation", use_container_width=True):
                 # Clean up temp image file if exists
                 if state["image_path"]:
                     try:
@@ -854,8 +987,14 @@ def show_diagnosis_page():
                     "image_path": None,
                     "skin_result": None,
                     "answers": {},
-                    "disease_ranker": None
+                    "disease_ranker": None,
+                    "questions_asked": 0,
+                    "max_questions": 8,
+                    "confidence_threshold": 0.85
                 }
+                # Clear AI generator to reset state
+                if 'ai_generator' in st.session_state:
+                    del st.session_state.ai_generator
                 st.rerun()
 
         # Diseases
