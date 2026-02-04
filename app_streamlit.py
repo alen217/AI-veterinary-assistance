@@ -17,6 +17,7 @@ from mongo_disease_repository import MongoDiseaseRepository
 from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
 from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
+from ava_display_engine import AVADisplayEngine, QuestionStrategyEngine
 
 # Try to load AI-powered question generator
 try:
@@ -766,6 +767,80 @@ def show_diagnosis_page():
         else:
             st.info("No specific symptoms detected.")
         
+        # --- FILTERS FOR DISEASE RESULTS ---
+        st.markdown("---")
+        st.markdown("### 🔍 Filter Disease Results")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            filter_severity = st.selectbox(
+                "Severity",
+                options=["All", "mild", "moderate", "severe"],
+                key="filter_severity"
+            )
+        with col2:
+            filter_species = st.selectbox(
+                "Species",
+                options=["All"] + ["dog", "cat", "rabbit", "hamster", "guinea_pig", "ferret", "rat", "mouse", 
+                         "gerbil", "chinchilla", "hedgehog", "horse", "cow", "goat", "sheep", "pig", 
+                         "parrot", "parakeet", "cockatiel", "budgie", "turtle", "snake", "lizard", 
+                         "bearded_dragon", "gecko", "fish", "sugar_glider"],
+                key="filter_species"
+            )
+        with col3:
+            filter_min_confidence = st.slider(
+                "Min Confidence %",
+                min_value=0,
+                max_value=100,
+                value=0,
+                step=5,
+                key="filter_confidence"
+            )
+        with col4:
+            show_top_n = st.selectbox(
+                "Show Top",
+                options=[5, 10, 20, 50, "All"],
+                index=1,
+                key="filter_top_n"
+            )
+        
+        # Apply filters
+        filtered_matches = state["matches"].copy()
+        
+        if filter_severity != "All":
+            filtered_matches = [d for d in filtered_matches if d.get('severity') == filter_severity]
+        
+        if filter_species != "All":
+            filtered_matches = [d for d in filtered_matches 
+                              if filter_species in d.get('affected_species', [])]
+        
+        if filter_min_confidence > 0:
+            filtered_matches = [d for d in filtered_matches 
+                              if d.get('confidence', 0) >= (filter_min_confidence / 100)]
+        
+        # Limit results
+        if show_top_n != "All":
+            filtered_matches = filtered_matches[:show_top_n]
+        
+        # Show filter stats
+        try:
+            total_in_db = repo.db.diseases.count_documents({})
+            st.info(f"📊 Showing {len(filtered_matches)} of {len(state['matches'])} matched diseases (Database: {total_in_db} total)")
+        except:
+            st.info(f"📊 Showing {len(filtered_matches)} of {len(state['matches'])} matched diseases")
+        
+        # --- AVA-STYLE DISEASE PREDICTIONS (TOP-K WITH EXPLAINABILITY) ---
+        st.markdown("---")
+        if filtered_matches:
+            ava_engine = AVADisplayEngine()
+            ava_engine.display_ava_results(
+                diseases=filtered_matches,
+                patient_symptoms=state["symptoms"],
+                show_top_k=min(10, len(filtered_matches))
+            )
+        else:
+            st.warning("No diseases match the selected filters. Try adjusting the filters above.")
+        
         # --- STEP 3 & 4: AI-Powered Follow-up Questions ---
         st.markdown("---")
         st.markdown("### 🤖 AI Follow-up Analysis")
@@ -869,6 +944,29 @@ def show_diagnosis_page():
 
         # Check if question exists AND if it hasn't been answered yet
         if next_q and next_q.question not in state["answers"]:
+            # Display AVA question recommendation strategies
+            st.markdown("#### 📊 AVA Question Recommendation Strategies")
+            try:
+                strategy_engine = QuestionStrategyEngine(repo)
+                asked_symptoms = set([s.symptom for s in state["symptoms"]])
+                ava_questions = strategy_engine.get_recommended_questions(
+                    candidate_diseases=state["matches"][:5],  # Top-5 for strategy
+                    asked_symptoms=asked_symptoms
+                )
+                
+                if ava_questions:
+                    col1, col2 = st.columns(2)
+                    for i, q_info in enumerate(ava_questions[:2]):
+                        with (col1 if i == 0 else col2):
+                            st.info(f"""
+**{q_info['strategy']}**  
+{q_info['question']}  
+*Reasoning:* {q_info['reasoning']}
+                            """)
+                st.markdown("---")
+            except Exception as strat_error:
+                print(f"Strategy engine error: {strat_error}")
+            
             st.markdown(f"**Question {questions_asked + 1}:**")
             answer = st.text_input(
                 next_q.question,
@@ -1053,13 +1151,31 @@ def show_database_page():
     try:
         # Use get_db to access raw connection instead of undefined class
         db = get_db()
+        
+        # Database stats
+        total_diseases = db.diseases.count_documents({})
+        st.info(f"💾 **Database:** {total_diseases} diseases | 560+ symptoms | 673 total conditions")
 
-        # Search
-        col1, col2 = st.columns([3, 1])
+        # Enhanced filters
+        st.markdown("### 🔍 Advanced Filters")
+        col1, col2, col3, col4 = st.columns(4)
+        
         with col1:
-            search_query = st.text_input("🔍 Search diseases", placeholder="Enter disease name or keyword...")
+            search_query = st.text_input("Search", placeholder="Disease name or keyword...")
         with col2:
             severity_filter = st.selectbox("Severity", ["All", "mild", "moderate", "severe"])
+        with col3:
+            species_filter = st.selectbox("Species", ["All", "dog", "cat", "rabbit", "hamster", "guinea_pig", 
+                                                      "ferret", "rat", "mouse", "gerbil", "chinchilla", 
+                                                      "hedgehog", "horse", "cow", "goat", "sheep", "pig", 
+                                                      "parrot", "parakeet", "cockatiel", "budgie", 
+                                                      "turtle", "snake", "lizard", "bearded_dragon", 
+                                                      "gecko", "fish", "sugar_glider"])
+        with col4:
+            category_filter = st.selectbox("Category", ["All", "viral", "bacterial", "parasitic", "digestive", 
+                                                        "respiratory", "urinary", "skin", "endocrine", 
+                                                        "cardiovascular", "neurological", "orthopedic", 
+                                                        "eye", "ear", "dental", "reproductive", "exotic", "metabolic"])
 
         # Build query
         query = {}
@@ -1072,11 +1188,17 @@ def show_database_page():
 
         if severity_filter != "All":
             query["severity"] = severity_filter
+        
+        if species_filter != "All":
+            query["affected_species"] = species_filter
+        
+        if category_filter != "All":
+            query["category"] = category_filter
 
-        # Get diseases
-        diseases = list(db.diseases.find(query))
+        # Get diseases with pagination
+        diseases = list(db.diseases.find(query).limit(50))
 
-        st.markdown(f"### Found {len(diseases)} disease(s)")
+        st.markdown(f"### 📋 Found {len(diseases)} disease(s) {f'(showing first 50)' if len(diseases) == 50 else ''}")
 
         # Display diseases
         for disease in diseases:

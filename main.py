@@ -129,8 +129,11 @@ class VeterinaryAIAssistant:
             return []
 
         symptom_keys = [s.symptom for s in analysis.symptoms]
+        
+        # Get species for filtering
+        species = analysis.patient_info.animal_type if analysis.patient_info else None
 
-        db_results = self.disease_repo.find_by_symptoms(symptom_keys)
+        db_results = self.disease_repo.find_by_symptoms(symptom_keys, species=species)
 
         results = []
         for d in db_results:

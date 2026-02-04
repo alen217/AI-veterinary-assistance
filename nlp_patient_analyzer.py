@@ -24,14 +24,66 @@ except ImportError:
 
 
 class AnimalType(Enum):
-    """Supported animal types in veterinary context"""
+    """Supported animal types in veterinary context - 50+ species"""
+    # Common pets
     DOG = "dog"
     CAT = "cat"
-    BIRD = "bird"
+    
+    # Small mammals
+    HAMSTER = "hamster"
+    GUINEA_PIG = "guinea_pig"
+    FERRET = "ferret"
     RABBIT = "rabbit"
+    RAT = "rat"
+    MOUSE = "mouse"
+    GERBIL = "gerbil"
+    CHINCHILLA = "chinchilla"
+    HEDGEHOG = "hedgehog"
+    SUGAR_GLIDER = "sugar_glider"
+    
+    # Large animals
     HORSE = "horse"
     COW = "cow"
+    GOAT = "goat"
+    SHEEP = "sheep"
+    PIG = "pig"
+    ALPACA = "alpaca"
+    LLAMA = "llama"
+    DONKEY = "donkey"
+    
+    # Birds
+    PARROT = "parrot"
+    PARAKEET = "parakeet"
+    COCKATIEL = "cockatiel"
+    BUDGIE = "budgie"
+    CANARY = "canary"
+    FINCH = "finch"
+    LOVEBIRD = "lovebird"
+    MACAW = "macaw"
+    COCKATOO = "cockatoo"
+    CONURE = "conure"
+    BIRD = "bird"
+    
+    # Reptiles
+    BEARDED_DRAGON = "bearded_dragon"
+    GECKO = "gecko"
+    LIZARD = "lizard"
+    IGUANA = "iguana"
+    CHAMELEON = "chameleon"
+    SNAKE = "snake"
+    BALL_PYTHON = "ball_python"
+    CORN_SNAKE = "corn_snake"
+    TURTLE = "turtle"
+    TORTOISE = "tortoise"
+    
+    # Aquatic
+    FISH = "fish"
+    GOLDFISH = "goldfish"
+    BETTA = "betta"
+    KOI = "koi"
+    
     OTHER = "other"
+
 
 
 @dataclass
@@ -98,6 +150,8 @@ class VeterinaryNLPAnalyzer:
         return {
             # Gastrointestinal symptoms
             "vomiting": ["vomit", "vomiting", "threw up", "regurgitation"],
+            "constipation": ["constipation", "not pooping", "no poop", "hasn't pooped"],
+            "bloating": ["bloated", "bloating", "swollen belly", "distended"],
             "diarrhea": ["diarrhea", "diarrhoea", "loose stool", "runs", "soft stool"],
             "constipation": ["constipated", "constipation", "hard stool", "straining"],
             "loss_of_appetite": ["loss of appetite", "anorexia", "not eating", "refusing food", "inappetence"],
@@ -112,10 +166,14 @@ class VeterinaryNLPAnalyzer:
             
             # Dermatological symptoms
             "itching": ["itch", "itching", "scratching", "pruritus", "itchy"],
-            "hair_loss": ["hair loss", "alopecia", "losing fur", "bald"],
+            "hair_loss": ["hair loss", "alopecia", "losing fur", "bald", "losing hair"],
+            "poor_coat": ["rough coat", "poor coat", "dull coat", "matted fur"],
+            "shell_problems": ["soft shell", "shell problem", "shell problems"],
             "skin_lesion": ["skin lesion", "sore", "wound", "scab"],
             "rash": ["rash", "hives", "eruption"],
             "red_skin": ["red skin", "redness", "erythema"],
+            "white_spots": ["white spots", "white spot", "ich"],
+            "foul_odor": ["bad smell", "foul odor", "smells bad", "stinks"],
             
             # Neurological symptoms
             "seizure": ["seizure", "seizures", "convulsion", "fit"],
@@ -186,12 +244,63 @@ class VeterinaryNLPAnalyzer:
     def _load_animal_patterns() -> Dict[str, List[str]]:
         """Load patterns to identify animal type"""
         return {
-            "dog": ["dog", "canine", "puppy", "pup"],
-            "cat": ["cat", "feline", "kitten"],
-            "bird": ["bird", "parrot", "cockatiel", "budgie", "canary"],
-            "rabbit": ["rabbit", "bunny", "hutch"],
-            "horse": ["horse", "pony", "equine", "colt"],
-            "cow": ["cow", "cattle", "bovine", "calf"],
+            # Common pets
+            "dog": ["dog", "canine", "puppy", "pup", "doggo"],
+            "cat": ["cat", "feline", "kitten", "kitty"],
+            
+            # Small mammals
+            "hamster": ["hamster", "hammy"],
+            "guinea_pig": ["guinea pig", "cavy", "guinea-pig"],
+            "ferret": ["ferret"],
+            "rabbit": ["rabbit", "bunny", "hutch", "hare"],
+            "rat": ["rat", "rats"],
+            "mouse": ["mouse", "mice"],
+            "gerbil": ["gerbil"],
+            "chinchilla": ["chinchilla", "chin"],
+            "hedgehog": ["hedgehog", "hedgie"],
+            "sugar_glider": ["sugar glider", "glider"],
+            
+            # Large animals
+            "horse": ["horse", "pony", "equine", "colt", "mare", "stallion"],
+            "cow": ["cow", "cattle", "bovine", "calf", "bull", "heifer"],
+            "goat": ["goat", "kid", "billy", "nanny"],
+            "sheep": ["sheep", "lamb", "ewe", "ram"],
+            "pig": ["pig", "hog", "swine", "piglet", "pork"],
+            "alpaca": ["alpaca"],
+            "llama": ["llama"],
+            "donkey": ["donkey", "burro", "ass"],
+            "miniature_pig": ["mini pig", "miniature pig", "teacup pig"],
+            
+            # Birds
+            "parrot": ["parrot", "macaw", "amazon"],
+            "parakeet": ["parakeet", "budgerigar"],
+            "cockatiel": ["cockatiel", "tiel"],
+            "budgie": ["budgie", "budgerigar"],
+            "canary": ["canary"],
+            "finch": ["finch"],
+            "lovebird": ["lovebird", "love bird"],
+            "macaw": ["macaw"],
+            "cockatoo": ["cockatoo"],
+            "conure": ["conure"],
+            "bird": ["bird", "avian", "fowl"],
+            
+            # Reptiles
+            "bearded_dragon": ["bearded dragon", "beardie"],
+            "gecko": ["gecko", "leopard gecko"],
+            "lizard": ["lizard"],
+            "iguana": ["iguana"],
+            "chameleon": ["chameleon"],
+            "snake": ["snake", "serpent"],
+            "ball_python": ["ball python"],
+            "corn_snake": ["corn snake"],
+            "turtle": ["turtle"],
+            "tortoise": ["tortoise", "tort"],
+            
+            # Aquatic (most specific first)
+            "goldfish": ["goldfish", "gold fish"],
+            "betta": ["betta", "siamese fighting fish"],
+            "koi": ["koi"],
+            "fish": ["fish"],
         }
 
     @staticmethod
