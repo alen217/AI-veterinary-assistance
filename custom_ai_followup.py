@@ -186,16 +186,17 @@ class CustomAIFollowUpGenerator:
             context_tensor = torch.tensor([context_indices], dtype=torch.long).to(self.device)
             
             # Generate multiple questions with slight variations
-            for _ in range(num_questions):
-                # Use model's generate method
-                question_indices = self.model.generate(
-                    context_tensor,
-                    max_length=30,
-                    temperature=0.9  # Some randomness for variety
-                )
+            for i in range(num_questions):
+                # Vary temperature for diversity
+                temp = 0.9 + (i * 0.05)  # 0.9, 0.95, 1.0, etc.
                 
-                # Convert indices back to text
-                question_text = self.vocab.indices_to_sentence(question_indices[0].cpu().tolist())
+                # Use model's generate_question method (singular, not plural)
+                question_text = self.model.generate_question(
+                    context_tensor,
+                    self.vocab,
+                    max_length=30,
+                    temperature=temp
+                )
                 
                 # Clean up the question
                 question_text = question_text.strip()
