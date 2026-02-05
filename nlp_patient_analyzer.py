@@ -149,13 +149,12 @@ class VeterinaryNLPAnalyzer:
         """Load comprehensive veterinary symptoms dictionary"""
         return {
             # Gastrointestinal symptoms
-            "vomiting": ["vomit", "vomiting", "threw up", "regurgitation"],
-            "constipation": ["constipation", "not pooping", "no poop", "hasn't pooped"],
-            "bloating": ["bloated", "bloating", "swollen belly", "distended"],
-            "diarrhea": ["diarrhea", "diarrhoea", "loose stool", "runs", "soft stool"],
-            "constipation": ["constipated", "constipation", "hard stool", "straining"],
-            "loss_of_appetite": ["loss of appetite", "anorexia", "not eating", "refusing food", "inappetence"],
-            "abdominal_pain": ["abdominal pain", "belly pain", "stomach pain", "tender abdomen", "painful stomach"],
+            "vomiting": ["vomit", "vomiting", "threw up", "regurgitation", "throwing up", "puking"],
+            "constipation": ["constipation", "constipated", "not pooping", "no poop", "hasn't pooped", "hard stool", "straining to poop"],
+            "bloating": ["bloated", "bloating", "swollen belly", "distended", "distended abdomen"],
+            "diarrhea": ["diarrhea", "diarrhoea", "loose stool", "runs", "soft stool", "watery stool", "liquid poop"],
+            "loss_of_appetite": ["loss of appetite", "anorexia", "not eating", "refusing food", "inappetence", "won't eat", "doesn't want to eat"],
+            "abdominal_pain": ["abdominal pain", "belly pain", "stomach pain", "tender abdomen", "painful stomach", "painful belly"],
             
             # Respiratory symptoms
             "cough": ["cough", "coughing", "coughs"],

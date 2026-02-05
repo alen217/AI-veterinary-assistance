@@ -82,9 +82,16 @@ class DynamicDiseaseRanker:
                 current_conf = disease.get('confidence', 0.5)
                 
                 if is_positive:
-                    # Symptom confirmed - BOOST confidence significantly
-                    boost = 0.15  # 15% boost
-                    new_conf = min(1.0, current_conf + boost)
+                    # Symptom confirmed - BOOST confidence
+                    # Scale boost based on current confidence (diminishing returns)
+                    if current_conf < 0.5:
+                        boost = 0.20  # 20% boost for low confidence
+                    elif current_conf < 0.75:
+                        boost = 0.15  # 15% boost for medium confidence
+                    else:
+                        boost = 0.10  # 10% boost for high confidence
+                    
+                    new_conf = min(0.95, current_conf + boost)  # Cap at 95%
                     disease['confidence'] = new_conf
                     disease['matched_additional_symptoms'] = disease.get('matched_additional_symptoms', [])
                     if symptom_checked not in disease['matched_additional_symptoms']:
@@ -92,9 +99,16 @@ class DynamicDiseaseRanker:
                     print(f"✅ Boosted {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
                     
                 elif is_negative:
-                    # Symptom NOT present - REDUCE confidence
-                    penalty = 0.10  # 10% penalty
-                    new_conf = max(0.0, current_conf - penalty)
+                    # Symptom NOT present - REDUCE confidence significantly
+                    # Scale penalty based on importance of the symptom
+                    if current_conf > 0.7:
+                        penalty = 0.15  # 15% penalty for high confidence diseases
+                    elif current_conf > 0.4:
+                        penalty = 0.12  # 12% penalty for medium confidence
+                    else:
+                        penalty = 0.08  # 8% penalty for low confidence
+                    
+                    new_conf = max(0.05, current_conf - penalty)  # Floor at 5%
                     disease['confidence'] = new_conf
                     print(f"⬇️  Reduced {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
     

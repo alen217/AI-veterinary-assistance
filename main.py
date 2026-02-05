@@ -125,15 +125,21 @@ class VeterinaryAIAssistant:
     # MONGO SEARCH
     # ------------------------------------------------------------------
     def _search_for_related_diseases(self, analysis: AnalysisResult) -> List[Dict]:
+        """Search for diseases matching patient symptoms with animal filtering"""
         if not analysis.symptoms:
             return []
 
         symptom_keys = [s.symptom for s in analysis.symptoms]
         
-        # Get species for filtering
+        # Get species for filtering - CRITICAL for correct results
         species = analysis.patient_info.animal_type if analysis.patient_info else None
 
-        db_results = self.disease_repo.find_by_symptoms(symptom_keys, species=species)
+        # Search with species filter - now returns more matches (limit=50)
+        db_results = self.disease_repo.find_by_symptoms(
+            symptom_keys, 
+            limit=50,  # Get more matches for better analysis
+            species=species
+        )
 
         results = []
         for d in db_results:
@@ -145,8 +151,11 @@ class VeterinaryAIAssistant:
                 "prevention": d.get("prevention"),
                 "severity": d.get("severity"),
                 "affected_species": d.get("affected_species", []),
-                "confidence": d.get("match_score", d.get("confidence", 0.0)),
-                "symptom_match_count": d.get("symptom_match_count", 0)
+                "confidence": d.get("confidence", 0.0),  # Use new confidence score
+                "symptom_match_count": d.get("symptom_match_count", 0),
+                "matched_symptoms": d.get("matched_symptoms", []),  # Show which symptoms matched
+                "patient_coverage": d.get("patient_coverage", 0.0),
+                "match_ratio": d.get("match_ratio", 0.0)
             })
 
         return results[:5]
