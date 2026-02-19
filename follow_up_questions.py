@@ -8,6 +8,7 @@ print("🚨 follow_up_questions.py LOADED FROM:", os.path.abspath(__file__))
 
 
 from typing import List, Dict, Optional, Set
+from collections import Counter
 from dataclasses import dataclass
 from nlp_patient_analyzer import PatientInfo, SymptomExtraction, DiseaseExtraction
 from mongo_disease_repository import MongoDiseaseRepository
@@ -193,39 +194,49 @@ class FollowUpQuestionGenerator:
         questions = []
         animal = patient_info.animal_type or "pet"
         
-        # 1. Always ask symptom details first
+        # 1. Structured symptom detail questions first
         for symptom in symptoms:
             questions.extend(self._generate_symptom_questions(symptom, animal))
         
         # 2. ONLY proceed if core info (duration & severity) is present
         if self._is_core_symptom_complete(symptoms):
+            # 3. Cross-check disease symptoms (structured differential)
+            questions.extend(
+                self._generate_disease_crosscheck_questions(
+                    diseases=diseases,
+                    symptoms=symptoms,
+                    animal=animal
+                )
+            )
             
-            # 3. Generate disease-specific questions (High Confidence Only)
-            for disease in diseases[:3]:  # Check top 3 suspected diseases
-                if disease.confidence >= 0.6:
-                    questions.extend(
-                        self._generate_disease_questions(disease, animal, symptoms)
-                    )
-            
-            # 4. Generate additional symptom questions
-            questions.extend(self._generate_additional_symptom_questions(symptoms, animal))
-            
-            # 5. Generate general medical history questions
-            questions.extend(self._generate_medical_history_questions(animal))
+            # 4. Add structured symptom checklist only if needed
+            if len(questions) < max_questions:
+                questions.extend(
+                    self._generate_additional_symptom_questions(symptoms, animal)
+                )
         
         # Remove duplicates and sort by priority
         questions = self._deduplicate_questions(questions)
         questions.sort(key=lambda q: q.priority, reverse=True)
         
-        # 6. Limit questions per category (Max 2)
-        MAX_PER_CATEGORY = 2
+        # 6. Limit questions per category (structured caps)
+        max_per_category = {
+            "symptom_details": 3,
+            "disease_confirmation": 3,
+            "additional_symptoms": 2,
+            "risk_factors": 1,
+            "medical_history": 1,
+            "lifestyle": 1
+        }
+        default_max = 2
         category_count = {}
         filtered_questions = []
         
         for q in questions:
             cat = q.category
             count = category_count.get(cat, 0)
-            if count < MAX_PER_CATEGORY:
+            limit = max_per_category.get(cat, default_max)
+            if count < limit:
                 filtered_questions.append(q)
                 category_count[cat] = count + 1
         
@@ -274,13 +285,14 @@ class FollowUpQuestionGenerator:
                 reasoning=f"Frequency patterns can indicate disease type"
             ))
         
-        # General symptom progression question
-        questions.append(FollowUpQuestion(
-            category="symptom_details",
-            question=f"Is the {symptom_display} getting worse, staying the same, or improving?",
-            priority=3,
-            reasoning="Progression indicates disease trajectory"
-        ))
+        # Ask progression only after core details are known
+        if symptom.duration and symptom.severity:
+            questions.append(FollowUpQuestion(
+                category="symptom_details",
+                question=f"Is the {symptom_display} getting worse, staying the same, or improving?",
+                priority=2,
+                reasoning="Progression helps track disease trajectory"
+            ))
         
         return questions
     
@@ -307,28 +319,93 @@ class FollowUpQuestionGenerator:
         missing = [s for s in common_symptoms if s not in present_symptoms]
 
         if missing:
-            questions.append(
-                FollowUpQuestion(
-                    category="disease_confirmation",
-                    question=f"Has your {animal} also shown {missing[0].replace('_', ' ')}?",
-                    priority=4,
-                    reasoning=f"This symptom commonly occurs in {disease.disease_name}"
+            for symptom in missing[:2]:
+                questions.append(
+                    FollowUpQuestion(
+                        category="disease_confirmation",
+                        question=f"Has your {animal} also shown {symptom.replace('_', ' ')}?",
+                        priority=4,
+                        reasoning=f"This symptom commonly occurs in {disease.disease_name}"
+                    )
                 )
+
+        return questions
+
+    def _generate_disease_crosscheck_questions(
+        self,
+        diseases: List[DiseaseExtraction],
+        symptoms: List[SymptomExtraction],
+        animal: str,
+        max_per_disease: int = 2
+    ) -> List[FollowUpQuestion]:
+        """
+        Generate structured cross-check questions based on missing
+        symptoms for top suspected diseases. Prioritizes symptoms that
+        are more discriminating between diseases.
+        """
+        questions = []
+        if not diseases:
+            return questions
+
+        present_symptoms = {s.symptom for s in symptoms}
+
+        # Build disease symptom sets (top 3 by confidence)
+        disease_infos = []
+        for disease in sorted(diseases, key=lambda d: d.confidence, reverse=True)[:3]:
+            db_disease = self.disease_repo.find_by_name(disease.disease_name)
+            if not db_disease:
+                continue
+            common_symptoms = [
+                s for s in db_disease.get("common_symptoms", [])
+                if s
+            ]
+            if not common_symptoms:
+                continue
+
+            disease_infos.append({
+                "name": disease.disease_name,
+                "confidence": disease.confidence,
+                "common_symptoms": common_symptoms
+            })
+
+        if not disease_infos:
+            return questions
+
+        # Frequency of symptoms across top diseases
+        symptom_frequency = Counter()
+        for info in disease_infos:
+            for s in set(info["common_symptoms"]):
+                symptom_frequency[s] += 1
+
+        for info in disease_infos:
+            missing = [
+                s for s in info["common_symptoms"]
+                if s not in present_symptoms
+            ]
+            if not missing:
+                continue
+
+            # Prefer symptoms unique to a single disease (discriminating)
+            missing.sort(
+                key=lambda s: (symptom_frequency.get(s, 1), s)
             )
 
-        # -------------------------
-        # Cause / exposure questions
-        # -------------------------
-        causes = db_disease.get("causes", [])
-        if causes:
-            questions.append(
-                FollowUpQuestion(
-                    category="risk_factors",
-                    question=f"Has your {animal} been exposed to {causes[0].replace('_', ' ')}?",
-                    priority=3,
-                    reasoning=f"This is a known cause of {disease.disease_name}"
+            for symptom in missing[:max_per_disease]:
+                symptom_display = symptom.replace("_", " ")
+                is_unique = symptom_frequency.get(symptom, 1) == 1
+                priority = 4 if is_unique else 3
+
+                questions.append(
+                    FollowUpQuestion(
+                        category="disease_confirmation",
+                        question=f"Has your {animal} shown {symptom_display}?",
+                        priority=priority,
+                        reasoning=(
+                            f"Cross-checks a common symptom of {info['name']} "
+                            "to confirm or rule it out"
+                        )
+                    )
                 )
-            )
 
         return questions
 
