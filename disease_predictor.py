@@ -347,6 +347,7 @@ class DiseasePredictor:
         self,
         predictions: List[Dict[str, Any]],
         symptom_text: str,
+        asked_phrases: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         if len(predictions) < 2:
             return None
@@ -364,10 +365,16 @@ class DiseasePredictor:
             return None
 
         text_lc = _normalize_text(symptom_text)
+        asked_set = {
+            _normalize_text(str(phrase).replace("_", " "))
+            for phrase in (asked_phrases or [])
+            if phrase
+        }
         ranked: List[Tuple[float, str]] = []
         for phrase in candidates:
             phrase = phrase.strip()
-            if not phrase or phrase in text_lc:
+            phrase_norm = _normalize_text(phrase)
+            if not phrase or phrase in text_lc or phrase_norm in asked_set:
                 continue
             score = len(phrase.split()) * 0.1
             if any(keyword in phrase for keyword in self.PRIORITY_KEYWORDS):
@@ -456,7 +463,12 @@ class DiagnosticSession:
         return float(self.diseases[0]["confidence"] - self.diseases[1]["confidence"])
 
     def get_next_question(self) -> Optional[Dict[str, Any]]:
-        return self.predictor.generate_followup_question(self.diseases, self.symptom_text)
+        asked_phrases = [item.get("symptom_phrase") for item in self.asked_questions]
+        return self.predictor.generate_followup_question(
+            self.diseases,
+            self.symptom_text,
+            asked_phrases=asked_phrases,
+        )
 
     def update_scores(self, symptom_phrase: str, answer_yes: bool):
         self.diseases = self.predictor.apply_followup_answer(

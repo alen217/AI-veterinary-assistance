@@ -439,7 +439,11 @@ def _render_semantic_diagnosis_feature(state):
                         "candidate_count": meta.used_candidates,
                     }
                 )
-                semantic_state["next_question"] = predictor.generate_followup_question(predictions, query_text)
+                semantic_state["next_question"] = predictor.generate_followup_question(
+                    predictions,
+                    query_text,
+                    asked_phrases=[],
+                )
                 state["semantic_state"] = semantic_state
                 st.rerun()
             except Exception as exc:
@@ -518,9 +522,15 @@ def _render_semantic_diagnosis_feature(state):
             )
             semantic_state["predictions"] = updated
             semantic_state["question_history"] = history[-8:]
+            asked_phrases = [
+                item.get("symptom_phrase")
+                for item in semantic_state["question_history"]
+                if item.get("symptom_phrase")
+            ]
             semantic_state["next_question"] = predictor.generate_followup_question(
                 updated,
                 semantic_state.get("query_text", query_text),
+                asked_phrases=asked_phrases,
             )
             state["semantic_state"] = semantic_state
             st.rerun()
