@@ -12,8 +12,10 @@ __pycache__/
 venv/
 cd ml_training/skin_disease/src
 
-*.pth
+# Ignore skin disease model (large file)
 ava/skin_disease/model.pth
+# But keep the follow-up QA model (needed for deployment)
+!ml_training/vet_followup_qa/vet_followup_model.pth
 
 
 # --------------------

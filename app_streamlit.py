@@ -12,10 +12,12 @@ from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 from pathlib import Path
 from main import VeterinaryAIAssistant
+from nlp_patient_analyzer import VeterinaryNLPAnalyzer
 from user_database import UserDatabase, get_db
 from mongo_disease_repository import MongoDiseaseRepository
 from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
+from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
@@ -265,12 +267,72 @@ def init_session_state():
             "matches": [], # To store full DB matches for display
             "image_path": None,
             "skin_result": None,
-            "answers": {}
+            "answers": {},
+            "disease_ranker": None,  # For AI-powered dynamic confidence updates
+            "follow_up_questions": [],
+            "questions_asked": 0,  # Track number of questions
+            "max_questions": 8,  # Maximum questions before stopping
+            "confidence_threshold": 0.85,  # Stop when top disease reaches this
+            "ruled_out_symptoms": []
         }
 
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+def _is_negative_answer(answer_text):
+    import re
+    negative_patterns = [
+        r"\bno\b", r"\bnot\b", r"\bnever\b", r"\bnone\b", r"\bwithout\b",
+        r"\bhasn['’]?t\b", r"\bhaven['’]?t\b", r"\bdoesn['’]?t\b", r"\bdidn['’]?t\b",
+        r"\bisn['’]?t\b", r"\baren['’]?t\b",
+    ]
+    return any(re.search(pattern, answer_text) for pattern in negative_patterns)
+
+def _is_positive_answer(answer_text):
+    import re
+    positive_patterns = [
+        r"\byes\b", r"\byep\b", r"\byeah\b", r"\bpresent\b", r"\bshowing\b",
+        r"\bexperiencing\b", r"\bhas\b", r"\bhave\b",
+    ]
+    return any(re.search(pattern, answer_text) for pattern in positive_patterns)
+
+def _collect_symptom_phrase_map(symptoms, matches):
+    phrases = set()
+    for s in symptoms:
+        phrases.add(s.symptom.replace("_", " ").lower())
+    for m in matches:
+        for s in m.get("common_symptoms", []):
+            phrases.add(s.replace("_", " ").lower())
+    return phrases
+
+def _format_symptom_label(symptom_key: str) -> str:
+    return VeterinaryNLPAnalyzer.format_symptom_label(symptom_key)
+
+def _extract_symptom_from_question(question, symptoms, matches):
+    if not question: return None
+    q_lower = question.lower()
+    for s in symptoms:
+        if s.symptom.replace("_", " ").lower() in q_lower:
+            return s.symptom
+    for m in matches:
+        for s in m.get("common_symptoms", []):
+            if s.replace("_", " ").lower() in q_lower:
+                return s
+    return None
+
+def _is_question_relevant(question, symptoms, matches):
+    q_lower = (question or "").lower()
+    phrase_to_symptom = _collect_symptom_phrase_map(symptoms, matches)
+    if any(phrase in q_lower for phrase in phrase_to_symptom):
+        return True
+
+    # Allow essential triage questions even when no exact symptom phrase is present.
+    essential_markers = [
+        "how long", "how severe", "how often", "getting worse", "eating",
+        "drinking", "medication", "allerg", "diet", "environment",
+    ]
+    return any(marker in q_lower for marker in essential_markers)
 
 # Login page
 def show_login_page():
@@ -441,9 +503,13 @@ def show_admin_panel():
         st.info(f"**Connection:** {'✅ Configured' if mongo_url != 'Not configured' else '❌ Not configured'}")
 
         st.markdown("#### Application Info")
-        st.write("**Version:** 1.0.0")
-        st.write("**AI Model:** NLP + MongoDB")
-        st.write("**Last Updated:** December 2025")
+        st.write("**Version:** 2.0.0")
+        st.write("**AI Model:** Custom Neural Network + MongoDB")
+        st.write("**Last Updated:** February 2026")
+        
+        st.markdown("---")
+        st.markdown("#### Follow-Up System")
+        st.info("ℹ️ Using Structural Question Generator")
 
 
 def show_main_app():
@@ -597,9 +663,18 @@ def show_diagnosis_page():
                 if uploaded_image:
                     image_path = save_temp_image(uploaded_image)
                     if image_path:
-                        skin_result = assistant.analyze_skin_image(image_path)
-                        if assistant.skin_adapter and not assistant.skin_adapter.available:
-                            st.info("🧪 Skin disease AI is optional and not installed on this system.")
+                        try:
+                            skin_result = assistant.analyze_skin_image(image_path)
+                            if assistant.skin_adapter and not assistant.skin_adapter.available:
+                                st.info("🧪 Skin disease AI is optional and not installed on this system.")
+                        except Exception as img_error:
+                            st.warning(f"⚠️ Image analysis failed: {img_error}")
+                            # Clean up temp file if analysis fails
+                            try:
+                                os.unlink(image_path)
+                            except:
+                                pass
+                            image_path = None
                 
                 # STEP 2 LOGIC: Run Analysis without questions, store state
                 analysis = assistant.analyze_patient_text(
@@ -612,12 +687,71 @@ def show_diagnosis_page():
                 state["symptoms"] = analysis["patient_analysis"].symptoms
                 state["diseases"] = analysis.get("disease_extractions", []) 
                 state["matches"] = analysis.get("database_matches", [])
+                state["answers"] = {}
+                state["questions_asked"] = 0
+                state["ruled_out_symptoms"] = []
+                
+                # Initialize dynamic disease ranker for AI-powered prioritization
+                if state["matches"]:
+                    state["disease_ranker"] = DynamicDiseaseRanker(state["matches"])
                 
                 # Fix 2: Assign image_path to state
                 state["image_path"] = image_path
                 
                 # Store image data if present
                 state["skin_result"] = skin_result
+                
+                # Save analysis to database for history tracking
+                try:
+                    db = get_db()
+                    
+                    # Prepare summary data
+                    top_diseases = []
+                    for disease in state["matches"][:3]:
+                        top_diseases.append({
+                            "name": disease.get("name", "Unknown"),
+                            "severity": disease.get("severity", "unknown"),
+                            "confidence": disease.get("confidence", 0)
+                        })
+                    
+                    # Determine urgency level
+                    urgency = "routine"
+                    if state["matches"]:
+                        urgency = state["matches"][0].get("severity", "routine")
+                    
+                    # Create history record
+                    history_record = {
+                        "username": st.session_state.username,
+                        "patient_text": patient_text,
+                        "patient_info": {
+                            "animal_type": state["patient_info"].animal_type,
+                            "age": state["patient_info"].age,
+                            "breed": state["patient_info"].breed,
+                            "weight": state["patient_info"].weight
+                        },
+                        "symptoms": [
+                            {
+                                "symptom": s.symptom,
+                                "severity": s.severity,
+                                "duration": s.duration
+                            } for s in state["symptoms"]
+                        ],
+                        "database_matches": state["matches"],
+                        "summary": {
+                            "top_diseases": top_diseases,
+                            "urgency": urgency
+                        },
+                        "skin_analysis": {
+                            "prediction": skin_result.get("prediction"),
+                            "confidence": skin_result.get("confidence")
+                        } if skin_result else None,
+                        "created_at": datetime.now()
+                    }
+                    
+                    db.analysis_history.insert_one(history_record)
+                    
+                except Exception as save_error:
+                    st.warning(f"⚠️ Could not save analysis to history: {save_error}")
                 
                 # Fix 1: Move cleanup BEFORE rerun
                 for k in list(st.session_state.keys()):
@@ -665,9 +799,10 @@ def show_diagnosis_page():
             for idx, symptom in enumerate(symptoms):
                 with cols[idx % 3]:
                     severity_class = f"severity-{symptom.severity}" if symptom.severity else "severity-mild"
+                    symptom_label = _format_symptom_label(symptom.symptom)
                     st.markdown(f"""
                     <div class="info-card">
-                    <strong>{symptom.symptom}</strong><br>
+                    <strong>{symptom_label}</strong><br>
                     <span class="severity-badge {severity_class}">
                     {symptom.severity or 'Unknown'}
                     </span><br>
@@ -677,56 +812,189 @@ def show_diagnosis_page():
         else:
             st.info("No specific symptoms detected.")
         
-        # --- STEP 3 & 4: Ask ONE follow-up question ---
+        # --- STEP 3 & 4: Follow-up Questions ---
         st.markdown("---")
-        st.markdown("### ❓ Follow-up Question")
-
-        # Initialize Generator
-        generator = FollowUpQuestionGenerator(repo)
+        st.markdown("### 🤖 Follow-up Analysis")
         
-        # Get next question based on CURRENT state
-        next_q = generator.get_next_question(
-            state["patient_info"],
-            state["symptoms"],
-            state["diseases"]
+        # Check stopping conditions
+        top_disease_confidence = state["matches"][0]['confidence'] if state["matches"] else 0
+        questions_asked = state.get("questions_asked", 0)
+        max_questions = state.get("max_questions", 8)
+        confidence_threshold = state.get("confidence_threshold", 0.85)
+        
+        # Display progress
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Questions Asked", f"{questions_asked}/{max_questions}")
+        with col2:
+            st.metric("Top Confidence", f"{top_disease_confidence:.1%}")
+        with col3:
+            st.metric("Target Confidence", f"{confidence_threshold:.1%}")
+        
+        # Determine if we should continue asking questions
+        should_continue = (
+            questions_asked < max_questions and 
+            top_disease_confidence < confidence_threshold and
+            len(state["matches"]) > 1
         )
+        
+        def _is_valid_q(q):
+            if not q or q.question in state.get("answers", {}):
+                return False
+            
+            cat = getattr(q, 'category', '')
+            
+            # Check if testing specific symptom that is already processed
+            sym = _extract_symptom_from_question(q.question, state.get("symptoms", []), state.get("matches", []))
+            
+            if sym:
+                # Always block questions about ruled out symptoms
+                if sym in state.get("ruled_out_symptoms", []):
+                    return False
+                
+                # If asking if the symptom is present (confirmation/additional), block if we already know it's present.
+                # Do NOT block if asking for 'symptom_details' (how long, how severe, etc) about a known symptom.
+                if cat in ['disease_confirmation', 'additional_symptoms', '']:
+                    if any(s.symptom == sym for s in state.get("symptoms", [])):
+                        return False
+            return True
 
-        # Fix 4: Check if question exists AND if it hasn't been answered yet
-        if next_q and next_q.question not in state["answers"]:
+        next_q = None
+        
+        if should_continue:
+            # Using template-based questions
+            generator = FollowUpQuestionGenerator(repo)
+            template_qs = generator.generate_questions(
+                state["patient_info"],
+                state["symptoms"],
+                state["diseases"],
+                max_questions=5
+            )
+            next_q = next((q for q in template_qs if _is_valid_q(q)), None)
+
+        if next_q:
+            st.markdown(f"**Question {questions_asked + 1}:**")
+            displayed_question = f"{next_q.question} [{next_q.reasoning}]"
             answer = st.text_input(
-                next_q.question,
-                key=f"answer_{hash(next_q.question)}"
+                displayed_question,
+                key=f"answer_{hash(next_q.question)}",
+                placeholder="Type your answer here..."
             )
 
-            if st.button("Submit Answer", key="consultation_submit_btn"):
-                # Update symptoms based on answer
-                apply_answer(state["symptoms"], next_q, answer)
-                
-                # Store the answer history
-                state["answers"][next_q.question] = answer
+            if st.button("✅ Submit Answer", key="consultation_submit_btn", use_container_width=True):
+                # Validate answer is not empty
+                if not answer or answer.strip() == "":
+                    st.warning("⚠️ Please provide an answer before submitting.")
+                else:
+                    # Increment question counter
+                    state["questions_asked"] = state.get("questions_asked", 0) + 1
 
-                # Reconstruct text for re-analysis
-                symptom_text = " ".join(
-                    f"{s.symptom} {s.severity or ''} {s.duration or ''}"
-                    for s in state["symptoms"]
-                )
+                    answer_lower = answer.lower()
+                    is_symptom_ruled_out = _is_negative_answer(answer_lower)
+                    is_symptom_confirmed = _is_positive_answer(answer_lower) and not is_symptom_ruled_out
+                    
+                    symptom_to_check = _extract_symptom_from_question(
+                        next_q.question,
+                        state.get("symptoms", []),
+                        state.get("matches", [])
+                    )
+                    
+                    if is_symptom_ruled_out:
+                        if symptom_to_check and symptom_to_check not in state.get("ruled_out_symptoms", []):
+                            state.setdefault("ruled_out_symptoms", []).append(symptom_to_check)
+                    elif is_symptom_confirmed:
+                        if symptom_to_check and not any(s.symptom == symptom_to_check for s in state.get("symptoms", [])):
+                            from nlp_patient_analyzer import SymptomExtraction
+                            state["symptoms"].append(SymptomExtraction(
+                                symptom=symptom_to_check,
+                                duration=None,
+                                severity=None,
+                                frequency=None
+                            ))
 
-                # Re-run disease analysis with updated symptoms
-                assistant = VeterinaryAIAssistant(repo)
-                
-                analysis = assistant.analyze_patient_text(
-                    symptom_text,
-                    generate_questions=False
-                )
+                    # Update symptoms based on answer
+                    apply_answer(state["symptoms"], next_q, answer, symptom_to_check)
+                    
+                    # Store the answer history
+                    state["answers"][next_q.question] = answer
+                    
+                    # Use programmatic dynamic confidence updates
+                    if state["disease_ranker"]:
+                        mentioned_symptom = symptom_to_check
+                        
+                        # Create answer object for processing
+                        follow_up_answer = FollowUpAnswer(
+                            question=next_q.question,
+                            answer=answer,
+                            category=next_q.category if hasattr(next_q, 'category') else 'symptom_details',
+                            symptom_confirmed=is_symptom_confirmed,
+                            symptom_ruled_out=is_symptom_ruled_out,
+                            mentioned_symptom=mentioned_symptom,
+                            symptom_to_check=symptom_to_check,
+                            severity_level=answer if 'severe' in answer.lower() else None
+                        )
+                        
+                        # Update disease rankings
+                        updated_diseases = state["disease_ranker"].update_confidence_with_answer(follow_up_answer)
+                        state["matches"] = updated_diseases
+                        
+                        # Update disease objects so next question is based on the updated ranking
+                        from nlp_patient_analyzer import DiseaseExtraction
+                        state["diseases"] = [
+                            DiseaseExtraction(
+                                disease_name=d.get("name", ""),
+                                confidence=d.get("confidence", 0.0),
+                                related_symptoms=d.get("common_symptoms", [])
+                            ) for d in updated_diseases
+                        ]
+                        
+                        st.info(f"🧠 Disease priorities updated based on your answer!")
+                    else:
+                        # Fallback: Re-run disease analysis
+                        symptom_text = " ".join(
+                            f"{s.symptom} {s.severity or ''} {s.duration or ''}"
+                            for s in state["symptoms"]
+                        )
+                        assistant = VeterinaryAIAssistant(repo)
+                        analysis = assistant.analyze_patient_text(
+                            symptom_text,
+                            generate_questions=False
+                        )
+                        state["diseases"] = analysis.get("disease_extractions", [])
+                        state["matches"] = analysis.get("database_matches", [])
 
-                # Update state with new data
-                state["diseases"] = analysis.get("disease_extractions", [])
-                state["matches"] = analysis.get("database_matches", [])
-
-                st.rerun()
+                    st.rerun()
         else:
-            st.success("✅ Sufficient information collected.")
-            if st.button("Start New Consultation"):
+            # Diagnosis complete
+            st.markdown("---")
+            if top_disease_confidence >= confidence_threshold:
+                st.success(f"✅ **Diagnosis Complete!** Achieved {top_disease_confidence:.1%} confidence")
+                st.balloons()
+            elif questions_asked >= max_questions:
+                st.info(f"📊 **Analysis Complete** - Maximum questions reached ({max_questions})")
+            elif len(state["matches"]) == 1:
+                st.success("✅ **Single Disease Identified!**")
+            else:
+                st.info("✅ **Sufficient Information Collected**")
+            
+            # Show summary stats
+            st.markdown("### 📈 Consultation Summary")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Questions", questions_asked)
+            with col2:
+                st.metric("Final Confidence", f"{top_disease_confidence:.1%}")
+            with col3:
+                st.metric("Diseases Analyzed", len(state["matches"]))
+            
+            if st.button("🔄 Start New Consultation", use_container_width=True):
+                # Clean up temp image file if exists
+                if state["image_path"]:
+                    try:
+                        os.unlink(state["image_path"])
+                    except:
+                        pass
+                
                 # Clear consultation state
                 st.session_state.consultation = {
                     "patient_info": None,
@@ -735,7 +1003,11 @@ def show_diagnosis_page():
                     "matches": [],
                     "image_path": None,
                     "skin_result": None,
-                    "answers": {}
+                    "answers": {},
+                    "disease_ranker": None,
+                    "questions_asked": 0,
+                    "max_questions": 8,
+                    "confidence_threshold": 0.85
                 }
                 st.rerun()
 
@@ -859,24 +1131,74 @@ def show_history_page():
     for idx, rec in enumerate(records, 1):
         created_at = rec.get("created_at", "")
         summary = rec.get("summary", {}) or {}
-        urgency = summary.get("urgency") or rec.get("recommendations", {}).get("urgency")
+        urgency = summary.get("urgency") or rec.get("recommendations", {}).get("urgency", "routine")
 
-        with st.expander(f"Analysis #{idx} - {str(created_at)[:19]}"):
+        with st.expander(f"Analysis #{idx} - {str(created_at)[:19] if created_at else 'Unknown Date'}"):
             st.markdown("**Patient Description:**")
-            st.write(rec.get("patient_text", ""))
+            st.write(rec.get("patient_text", "No description available"))
+            
+            # Show patient info if available
+            patient_info = rec.get("patient_info", {})
+            if patient_info:
+                st.markdown("**Patient Info:**")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.write(f"🐾 {patient_info.get('animal_type', 'Unknown')}")
+                with col2:
+                    if patient_info.get('age'):
+                        st.write(f"📅 {patient_info.get('age')}")
+                with col3:
+                    if patient_info.get('breed'):
+                        st.write(f"🏷️ {patient_info.get('breed')}")
+                with col4:
+                    if patient_info.get('weight'):
+                        st.write(f"⚖️ {patient_info.get('weight')}")
 
+            st.markdown("---")
             st.markdown("**Detected Diseases:**")
             top = summary.get("top_diseases") or []
             if top:
                 for d in top:
-                    st.write(f"- {d.get('name')} ({d.get('severity')})")
+                    severity_class = f"severity-{d.get('severity', 'mild')}"
+                    st.markdown(f"""
+                    <div style="padding: 0.5rem; margin: 0.5rem 0; background-color: rgba(30, 33, 39, 0.5); border-radius: 5px;">
+                        <strong>{d.get('name', 'Unknown Disease')}</strong>
+                        <span class="severity-badge {severity_class}" style="margin-left: 1rem;">
+                            {d.get('severity', 'unknown')}
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
                 for disease in (rec.get("database_matches") or [])[:3]:
                     if isinstance(disease, dict):
-                        st.write(f"- {disease.get('name')} ({disease.get('severity')})")
+                        severity_class = f"severity-{disease.get('severity', 'mild')}"
+                        st.markdown(f"""
+                        <div style="padding: 0.5rem; margin: 0.5rem 0; background-color: rgba(30, 33, 39, 0.5); border-radius: 5px;">
+                            <strong>{disease.get('name', 'Unknown')}</strong>
+                            <span class="severity-badge {severity_class}" style="margin-left: 1rem;">
+                                {disease.get('severity', 'unknown')}
+                            </span>
+                        </div>
+                        """, unsafe_allow_html=True)
+            
+            # Show skin analysis if available
+            skin_analysis = rec.get("skin_analysis")
+            if skin_analysis and skin_analysis.get("prediction"):
+                st.markdown("---")
+                st.markdown("**Skin Image Analysis:**")
+                st.write(f"🧬 Prediction: **{skin_analysis.get('prediction')}**")
+                if skin_analysis.get("confidence"):
+                    st.write(f"📊 Confidence: **{skin_analysis.get('confidence'):.2%}**")
 
-            if urgency:
-                st.markdown(f"**Urgency:** {urgency}")
+            st.markdown("---")
+            urgency_colors = {
+                "mild": "🟢",
+                "moderate": "🟡",
+                "severe": "🔴",
+                "routine": "🟢"
+            }
+            urgency_icon = urgency_colors.get(urgency, "🟡")
+            st.markdown(f"**Urgency Level:** {urgency_icon} {urgency.upper()}")
 
 
 def main():
@@ -890,3 +1212,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

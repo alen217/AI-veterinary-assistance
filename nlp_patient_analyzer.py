@@ -4,7 +4,7 @@ Analyzes patient descriptions to extract diseases, symptoms, and patient informa
 """
 
 import re
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from enum import Enum
 import json
@@ -76,6 +76,35 @@ class VeterinaryNLPAnalyzer:
     """
     Main NLP analyzer for veterinary patient text
     """
+    NEGATION_CUES: Set[str] = {
+        "no",
+        "not",
+        "never",
+        "without",
+        "deny",
+        "denies",
+        "denied",
+        "absence",
+        "absent",
+    }
+    INTRINSIC_NEGATIVE_SYMPTOM_PATTERNS: Set[str] = {
+        "not eating",
+        "not eaten",
+        "not drinking",
+        "not drinking normally",
+        "no energy",
+        "not active",
+    }
+    SYMPTOM_COMMON_TERMS: Dict[str, str] = {
+        "pollakiuria": "frequent urination",
+        "dysuria": "painful urination",
+        "hematuria": "blood in urine",
+        "excessive_genital_licking": "excessive genital licking",
+        "reduced_appetite": "reduced appetite",
+        "loss_of_appetite": "loss of appetite",
+        "urinary_issue": "urinary issue",
+        "restlessness": "restlessness",
+    }
 
     def __init__(self):
         """Initialize the analyzer with symptom and disease dictionaries"""
@@ -134,6 +163,60 @@ class VeterinaryNLPAnalyzer:
             "weight_loss": ["weight loss", "losing weight"],
             "lethargy": ["lethargy", "lethargic", "listless"],
             "swelling": ["swelling", "swollen", "edema", "enlarged"],
+
+            # Urinary symptoms
+            "pollakiuria": [
+                "pollakiuria",
+                "frequent urination",
+                "urinating frequently",
+                "urinating often",
+                "passing a few drops",
+                "frequent_urination",
+                "increased_urination",
+            ],
+            "dysuria": [
+                "dysuria",
+                "painful urination",
+                "pain when urinating",
+                "pain while urinating",
+                "straining to urinate",
+                "difficulty urinating",
+                "painful_urination",
+            ],
+            "hematuria": [
+                "hematuria",
+                "blood in urine",
+                "blood in the urine",
+                "bloody urine",
+                "red urine",
+                "blood_in_urine",
+            ],
+
+            # Behavioral symptoms
+            "excessive_genital_licking": [
+                "excessive genital licking",
+                "licking genital area",
+                "licking genitals",
+                "licking private area",
+                "excessive_genital_licking",
+                "licking_genital",
+                "genital_licking",
+            ],
+            "reduced_appetite": [
+                "reduced appetite",
+                "decreased appetite",
+                "poor appetite",
+                "eating less",
+                "reduced_appetite",
+                "poor_appetite",
+            ],
+            "restlessness": [
+                "restlessness",
+                "restless",
+                "agitated",
+                "unable to settle",
+                "pacing",
+            ],
         }
 
     @staticmethod
@@ -247,9 +330,10 @@ class VeterinaryNLPAnalyzer:
 
     def _extract_animal_type(self, text: str) -> Optional[str]:
         """Extract animal type from text"""
+        text_lower = text.lower()
         for animal, patterns in self.animal_patterns.items():
             for pattern in patterns:
-                if pattern in text:
+                if re.search(rf'\b{re.escape(pattern)}\b', text_lower):
                     return animal
         return None
 
@@ -297,31 +381,163 @@ class VeterinaryNLPAnalyzer:
         return None
 
     def _extract_symptoms(self, text: str) -> List[SymptomExtraction]:
-        """Extract all symptoms mentioned in text"""
-        symptoms = []
-        
+        """
+        Extract symptoms while respecting negation context.
+        Example: "no vomiting" should not add vomiting.
+        """
+        symptoms: List[SymptomExtraction] = []
+        text_sentences = [
+            sentence.strip()
+            for sentence in re.split(r"[.!?\n]+", text)
+            if sentence and sentence.strip()
+        ]
+
         for symptom_key, patterns in self.symptoms_dict.items():
-            for pattern in patterns:
-                # Find all occurrences
-                for match in re.finditer(rf'\b{re.escape(pattern)}\b', text, re.IGNORECASE):
-                    start_pos = max(0, match.start() - 100)
-                    end_pos = min(len(text), match.end() + 100)
-                    context = text[start_pos:end_pos].strip()
-                    
-                    duration = self._extract_duration(context)
-                    severity = self._extract_severity(context)
-                    frequency = self._extract_frequency(context)
-                    
-                    symptoms.append(SymptomExtraction(
-                        symptom=symptom_key,
-                        duration=duration,
-                        severity=severity,
-                        frequency=frequency,
-                        context=context
-                    ))
-        
-        # Remove duplicates while preserving best information
+            context = self._find_unnegated_phrase_in_sentences(text_sentences, patterns)
+            if not context:
+                continue
+
+            duration = self._extract_duration(context)
+            severity = self._extract_severity(context)
+            frequency = self._extract_frequency(context)
+            symptoms.append(SymptomExtraction(
+                symptom=symptom_key,
+                duration=duration,
+                severity=severity,
+                frequency=frequency,
+                context=context
+            ))
+
+        # Add custom extraction for urinary and behavior-specific signals.
+        custom_rules = [
+            ("pollakiuria", r"\bpollakiuria\b|frequent urination|urinating frequently|urinating often|passing a few drops|frequent_urination|increased_urination|frequent trips? to (?:the )?(?:litter box|outside)", "frequent urination detected"),
+            ("dysuria", r"\bdysuria\b|painful urination|painful_urination|pain(?:ful)? (?:while|when) urinat(?:ing|e)|straining to urinate|difficulty urinat(?:ing|e)|cry(?:ing)? while urinat(?:ing|e)", "painful urination detected"),
+            ("hematuria", r"\bhematuria\b|blood(?:y)? in (?:the )?urine|blood_in_urine|bloody urine|red urine", "blood in urine detected"),
+            ("hiding", r"hiding", "hiding behavior detected"),
+            ("excessive_genital_licking", r"(?:excessive|frequent|constant)\s+licking\s+(?:of\s+)?(?:the\s+)?(?:genital|private)\s+area|licking\s+(?:the\s+)?(?:genital|private)\s+area|excessive_genital_licking|licking_genital|genital_licking", "excessive genital licking detected"),
+            ("reduced_appetite", r"reduced appetite|decreased appetite|poor appetite|eating less|appetite reduced|reduced_appetite|poor_appetite", "reduced appetite detected"),
+            ("restlessness", r"\brestless(?:ness)?\b|agitated|unable to settle|pacing|can't settle", "restlessness detected"),
+            ("loss_of_appetite", r"not eating|not eaten|loss of appetite", "loss of appetite detected"),
+            ("dehydration", r"not drinking|not drinking normally|dehydration", "dehydration detected"),
+        ]
+
+        for symptom_key, pattern, fallback_context in custom_rules:
+            context = self._find_unnegated_regex_sentence(text_sentences, pattern)
+            if context:
+                symptoms.append(SymptomExtraction(
+                    symptom=symptom_key,
+                    duration=None,
+                    severity=None,
+                    frequency=None,
+                    context=context or fallback_context
+                ))
+
+        # Keep a generic urinary label only as a fallback when no specific urinary
+        # symptom was identified.
+        specific_urinary = {"pollakiuria", "dysuria", "hematuria"}
+        if not any(s.symptom in specific_urinary for s in symptoms):
+            urinary_context = self._find_unnegated_regex_sentence(
+                text_sentences,
+                r"litter box|urinate|urination|urine|urinary|bladder",
+            )
+            if urinary_context:
+                symptoms.append(SymptomExtraction(
+                    symptom="urinary_issue",
+                    duration=None,
+                    severity=None,
+                    frequency=None,
+                    context=urinary_context
+                ))
+
         return self._deduplicate_symptoms(symptoms)
+
+    @classmethod
+    def get_common_term(cls, symptom_key: str) -> str:
+        """Return a human-friendly/common term for a symptom key."""
+        if not symptom_key:
+            return ""
+        fallback = symptom_key.replace("_", " ")
+        return cls.SYMPTOM_COMMON_TERMS.get(symptom_key, fallback)
+
+    @classmethod
+    def format_symptom_label(cls, symptom_key: str) -> str:
+        """Format as `medical_term (common term)` when terms differ."""
+        if not symptom_key:
+            return ""
+        common = cls.get_common_term(symptom_key)
+        normalized_key = symptom_key.strip().lower()
+        normalized_common = common.strip().lower()
+        if normalized_key == normalized_common:
+            return common
+        return f"{symptom_key} ({common})"
+
+    def _find_unnegated_phrase_in_sentences(
+        self,
+        sentences: List[str],
+        patterns: List[str],
+    ) -> Optional[str]:
+        """Return the first sentence containing an affirmed (non-negated) pattern."""
+        for sentence in sentences:
+            for pattern in patterns:
+                regex = rf"\b{re.escape(pattern)}\b"
+                for match in re.finditer(regex, sentence, re.IGNORECASE):
+                    if not self._is_negated_mention(
+                        sentence,
+                        match.start(),
+                        match.end(),
+                        pattern,
+                    ):
+                        return sentence
+        return None
+
+    def _find_unnegated_regex_sentence(
+        self,
+        sentences: List[str],
+        regex_pattern: str,
+    ) -> Optional[str]:
+        """Return first sentence where regex matches in a non-negated context."""
+        for sentence in sentences:
+            for match in re.finditer(regex_pattern, sentence, re.IGNORECASE):
+                matched_text = match.group(0).strip().lower()
+                if not self._is_negated_mention(
+                    sentence,
+                    match.start(),
+                    match.end(),
+                    matched_text,
+                ):
+                    return sentence
+        return None
+
+    def _is_negated_mention(
+        self,
+        sentence: str,
+        match_start: int,
+        match_end: int,
+        matched_text: str,
+    ) -> bool:
+        """
+        Determine whether the matched phrase is negated by nearby tokens.
+        """
+        normalized_match = (matched_text or "").strip().lower()
+        if normalized_match in self.INTRINSIC_NEGATIVE_SYMPTOM_PATTERNS:
+            return False
+
+        prefix = sentence[:match_start].lower()
+        prefix_clause = re.split(r"[,:;.!?]", prefix)[-1]
+        prefix_clause = re.split(r"\b(?:but|however|though|although)\b", prefix_clause)[-1]
+        if "not only" in prefix_clause:
+            return False
+
+        prefix_tokens = re.findall(r"[a-z']+", prefix_clause)
+        if any(token in self.NEGATION_CUES for token in prefix_tokens[-5:]):
+            return True
+
+        suffix = sentence[match_end:].lower()
+        suffix_clause = re.split(r"[,:;.!?]", suffix)[0]
+        if re.search(r"\b(absent|not present|free of|negative for|ruled out)\b", suffix_clause):
+            return True
+
+        return False
 
     @staticmethod
     def _extract_duration(context: str) -> Optional[str]:
@@ -350,39 +566,35 @@ class VeterinaryNLPAnalyzer:
         return None
 
     def _extract_diseases(self, text: str, symptoms: List[SymptomExtraction]) -> List[DiseaseExtraction]:
-        """Extract potential diseases based on keywords and symptoms"""
+        """Stable disease prediction based on symptom overlap and keywords"""
         diseases = []
         extracted_symptom_keys = {s.symptom for s in symptoms}
-        
+        text_sentences = [
+            sentence.strip()
+            for sentence in re.split(r"[.!?\n]+", text)
+            if sentence and sentence.strip()
+        ]
         for disease_name, disease_info in self.diseases_dict.items():
-            # Check if disease keywords appear in text
             keyword_match = any(
-                keyword in text for keyword in disease_info["keywords"]
+                self._find_unnegated_phrase_in_sentences(text_sentences, [keyword])
+                for keyword in disease_info["keywords"]
             )
-            
-            # Check symptom overlap
-            symptom_overlap = sum(
-                1 for symptom in disease_info["common_symptoms"]
-                if symptom in extracted_symptom_keys
-            )
-            
-            # Calculate confidence
-            if keyword_match:
-                confidence = 0.8 + (symptom_overlap * 0.05)
-            elif symptom_overlap > 0:
-                confidence = 0.4 + (symptom_overlap * 0.1)
+            symptom_overlap = sum(1 for symptom in disease_info["common_symptoms"] if symptom in extracted_symptom_keys)
+            # New logic: prioritize symptom overlap, then keywords
+            if symptom_overlap >= 2:
+                confidence = 0.9 if keyword_match else 0.7
+            elif symptom_overlap == 1:
+                confidence = 0.5 if keyword_match else 0.4
+            elif keyword_match:
+                confidence = 0.3
             else:
                 confidence = 0.0
-            
-            # Only include if confidence > 0.3
             if confidence > 0.3:
                 diseases.append(DiseaseExtraction(
                     disease_name=disease_name,
-                    confidence=min(confidence, 1.0),
+                    confidence=confidence,
                     related_symptoms=[s for s in disease_info["common_symptoms"] if s in extracted_symptom_keys]
                 ))
-        
-        # Sort by confidence
         diseases.sort(key=lambda x: x.confidence, reverse=True)
         return diseases
 
@@ -442,7 +654,8 @@ class VeterinaryNLPAnalyzer:
                 severity_str = f" ({symptom.severity})" if symptom.severity else ""
                 duration_str = f" for {symptom.duration}" if symptom.duration else ""
                 freq_str = f" - {symptom.frequency}" if symptom.frequency else ""
-                report.append(f"  • {symptom.symptom}{severity_str}{duration_str}{freq_str}")
+                display_name = self.format_symptom_label(symptom.symptom)
+                report.append(f"  - {display_name}{severity_str}{duration_str}{freq_str}")
         else:
             report.append("  No symptoms extracted")
         
@@ -487,3 +700,4 @@ if __name__ == "__main__":
         "symptoms_count": len(result.symptoms),
         "diseases_count": len(result.suspected_diseases)
     }, indent=2))
+
