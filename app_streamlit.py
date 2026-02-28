@@ -18,6 +18,7 @@ from mongo_disease_repository import MongoDiseaseRepository
 from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
 from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
+from disease_predictor import DiseasePredictor
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
@@ -197,6 +198,27 @@ def load_custom_css():
         margin: 1rem 0;
     }
 
+    .semantic-card {
+        background: linear-gradient(145deg, #1a2333 0%, #121722 100%);
+        border: 1px solid #2c3d5c;
+        border-left: 5px solid #3ea5ff;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 0.75rem 0;
+    }
+
+    .semantic-title {
+        color: #d7ecff;
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 0.4rem;
+    }
+
+    .semantic-note {
+        color: #b7cde4;
+        font-size: 0.9rem;
+    }
+
     /* Sidebar styling */
     .css-1d391kg {
         background-color: #1e2127;
@@ -273,7 +295,9 @@ def init_session_state():
             "questions_asked": 0,  # Track number of questions
             "max_questions": 8,  # Maximum questions before stopping
             "confidence_threshold": 0.85,  # Stop when top disease reaches this
-            "ruled_out_symptoms": []
+            "ruled_out_symptoms": [],
+            "raw_patient_text": "",
+            "semantic_state": {}
         }
 
     for key, value in defaults.items():
@@ -333,6 +357,183 @@ def _is_question_relevant(question, symptoms, matches):
         "drinking", "medication", "allerg", "diet", "environment",
     ]
     return any(marker in q_lower for marker in essential_markers)
+
+
+def _default_semantic_state():
+    return {
+        "query_text": "",
+        "species": None,
+        "predictions": [],
+        "category_hint": None,
+        "engine_mode": "unavailable",
+        "candidate_count": 0,
+        "next_question": None,
+        "question_history": [],
+    }
+
+
+@st.cache_resource(show_spinner=False)
+def _get_disease_predictor():
+    db = get_db()
+    return DiseasePredictor(db)
+
+
+def _confidence_gap(predictions):
+    if not predictions or len(predictions) < 2:
+        return 1.0
+    return float(predictions[0].get("confidence", 0.0)) - float(predictions[1].get("confidence", 0.0))
+
+
+def _render_semantic_diagnosis_feature(state):
+    """
+    Independent diagnosis feature:
+    - semantic disease ranking
+    - confidence + reasons
+    - optional clarification question loop
+    This does not overwrite existing `matches` or follow-up pipeline state.
+    """
+    st.markdown("---")
+    st.markdown("### ðŸ§¬ Semantic Diagnosis Assistant (New Feature)")
+    st.markdown(
+        '<div class="semantic-note">Independent from the primary diagnosis flow. '
+        "Uses semantic profile matching + symptom overlap to provide an additional differential view.</div>",
+        unsafe_allow_html=True,
+    )
+
+    semantic_state = state.get("semantic_state") or _default_semantic_state()
+    state["semantic_state"] = semantic_state
+    query_text = (state.get("raw_patient_text") or "").strip()
+    species = state["patient_info"].animal_type if state.get("patient_info") else None
+
+    control_col, info_col = st.columns([2, 2])
+    with control_col:
+        run_semantic = st.button(
+            "ðŸ§¬ Run Semantic Differential",
+            key="semantic_run_btn",
+            use_container_width=True,
+        )
+    with info_col:
+        st.caption(f"Input species context: `{species or 'not provided'}`")
+
+    if run_semantic:
+        if not query_text:
+            st.warning("Run the main analysis first so the assistant can use the patient description.")
+        else:
+            try:
+                predictor = _get_disease_predictor()
+                with st.spinner("Running semantic differential diagnosis..."):
+                    predictions, meta = predictor.predict_disease(
+                        query_text,
+                        species=species,
+                        top_k=5,
+                        return_meta=True,
+                    )
+                semantic_state = _default_semantic_state()
+                semantic_state.update(
+                    {
+                        "query_text": query_text,
+                        "species": species,
+                        "predictions": predictions,
+                        "category_hint": meta.category_hint,
+                        "engine_mode": meta.engine_mode,
+                        "candidate_count": meta.used_candidates,
+                    }
+                )
+                semantic_state["next_question"] = predictor.generate_followup_question(predictions, query_text)
+                state["semantic_state"] = semantic_state
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Semantic diagnosis feature unavailable: {exc}")
+
+    predictions = semantic_state.get("predictions") or []
+    if not predictions:
+        st.info("Click `Run Semantic Differential` to view semantic confidence, reasoning, and clarification questions.")
+        return
+
+    top_conf = float(predictions[0].get("confidence", 0.0))
+    gap = _confidence_gap(predictions)
+    metric1, metric2, metric3, metric4 = st.columns(4)
+    with metric1:
+        st.metric("Top Confidence", f"{top_conf:.1%}")
+    with metric2:
+        st.metric("Confidence Gap", f"{gap:.1%}")
+    with metric3:
+        st.metric("Engine", semantic_state.get("engine_mode", "unknown"))
+    with metric4:
+        hint = semantic_state.get("category_hint") or "none"
+        st.metric("Category Hint", str(hint))
+
+    st.caption(
+        f"Candidate diseases evaluated: {semantic_state.get('candidate_count', 0)} | "
+        "Confidence is normalized to the top semantic score."
+    )
+
+    for rank, disease in enumerate(predictions[:5], start=1):
+        confidence = float(disease.get("confidence", 0.0))
+        severity = disease.get("severity", "unknown")
+        reasons = disease.get("reasons") or []
+        matched = disease.get("matched_symptoms") or []
+
+        st.markdown(
+            f"""
+            <div class="semantic-card">
+                <div class="semantic-title">{rank}. {disease.get('name', 'Unknown')}</div>
+                <div class="semantic-note">Severity: {severity}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.progress(min(max(confidence, 0.0), 1.0))
+        if reasons:
+            st.markdown("**Reasoning:**")
+            for reason in reasons[:4]:
+                st.write(f"- {reason}")
+        if matched:
+            st.caption("Directly matched symptoms: " + ", ".join(matched[:6]))
+
+    next_question = semantic_state.get("next_question")
+    if next_question:
+        st.markdown("#### Clarifying Question")
+        st.info(f"{next_question['question']}  \nReason: {next_question.get('reason', 'Differential clarification')}")
+        answer_choice = st.radio(
+            "Answer",
+            options=["Yes", "No"],
+            horizontal=True,
+            key="semantic_answer_choice",
+        )
+        if st.button("Apply Clarification Answer", key="semantic_apply_btn", use_container_width=True):
+            predictor = _get_disease_predictor()
+            answer_yes = answer_choice == "Yes"
+            updated = predictor.apply_followup_answer(
+                predictions,
+                symptom_phrase=next_question["symptom_phrase"],
+                answer_yes=answer_yes,
+            )
+            history = semantic_state.get("question_history") or []
+            history.append(
+                {
+                    "question": next_question["question"],
+                    "answer": answer_choice,
+                    "symptom_phrase": next_question["symptom_phrase"],
+                }
+            )
+            semantic_state["predictions"] = updated
+            semantic_state["question_history"] = history[-8:]
+            semantic_state["next_question"] = predictor.generate_followup_question(
+                updated,
+                semantic_state.get("query_text", query_text),
+            )
+            state["semantic_state"] = semantic_state
+            st.rerun()
+    else:
+        st.success("Confidence separation is already strong. No additional clarification question required.")
+
+    history = semantic_state.get("question_history") or []
+    if history:
+        with st.expander("Clarification History", expanded=False):
+            for item in history:
+                st.write(f"- Q: {item['question']}")
+                st.write(f"  A: {item['answer']}")
 
 # Login page
 def show_login_page():
@@ -690,6 +891,8 @@ def show_diagnosis_page():
                 state["answers"] = {}
                 state["questions_asked"] = 0
                 state["ruled_out_symptoms"] = []
+                state["raw_patient_text"] = patient_text
+                state["semantic_state"] = _default_semantic_state()
                 
                 # Initialize dynamic disease ranker for AI-powered prioritization
                 if state["matches"]:
@@ -1007,7 +1210,9 @@ def show_diagnosis_page():
                     "disease_ranker": None,
                     "questions_asked": 0,
                     "max_questions": 8,
-                    "confidence_threshold": 0.85
+                    "confidence_threshold": 0.85,
+                    "raw_patient_text": "",
+                    "semantic_state": _default_semantic_state()
                 }
                 st.rerun()
 
@@ -1058,6 +1263,9 @@ def show_diagnosis_page():
         else:
             st.markdown("- Continue monitoring the patient at home.")
             st.markdown("- Maintain current care routine.")
+
+        # Independent semantic differential feature (does not modify primary diagnosis state)
+        _render_semantic_diagnosis_feature(state)
 
 
 
