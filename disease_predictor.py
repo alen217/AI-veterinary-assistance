@@ -281,10 +281,27 @@ class DiseasePredictor:
                 else:
                     score -= 0.02
 
-            reasons: List[str] = [
-                f"Semantic similarity: {semantic:.2f}",
-                f"Symptom overlap: {len(matched_symptoms)} matched",
-            ]
+            embedding_component = 0.75 * semantic
+            overlap_component = 0.25 * overlap_ratio
+            symptom_boost_component = 0.06 * len(matched_symptoms)
+
+            reasons: List[str] = []
+            if engine_mode == "semantic-embeddings":
+                reasons.append(
+                    f"Embedding similarity to disease profile: {semantic:.3f}"
+                )
+            else:
+                reasons.append(
+                    f"Embedding unavailable; lexical profile overlap used: {semantic:.3f}"
+                )
+
+            reasons.append(
+                "Score components: "
+                f"embedding={embedding_component:.3f}, "
+                f"symptom_overlap={overlap_component:.3f}, "
+                f"symptom_boost={symptom_boost_component:.3f}"
+            )
+
             if matched_symptoms:
                 reasons.append("Matched symptoms: " + ", ".join(matched_symptoms[:4]))
             if species:

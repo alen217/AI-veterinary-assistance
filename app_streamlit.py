@@ -393,7 +393,7 @@ def _render_semantic_diagnosis_feature(state):
     This does not overwrite existing `matches` or follow-up pipeline state.
     """
     st.markdown("---")
-    st.markdown("### ðŸ§¬ Semantic Diagnosis Assistant (New Feature)")
+    st.markdown("### Semantic Diagnosis Assistant (New Feature)")
     st.markdown(
         '<div class="semantic-note">Independent from the primary diagnosis flow. '
         "Uses semantic profile matching + symptom overlap to provide an additional differential view.</div>",
@@ -408,7 +408,7 @@ def _render_semantic_diagnosis_feature(state):
     control_col, info_col = st.columns([2, 2])
     with control_col:
         run_semantic = st.button(
-            "ðŸ§¬ Run Semantic Differential",
+            "Run Semantic Differential",
             key="semantic_run_btn",
             use_container_width=True,
         )
@@ -447,25 +447,24 @@ def _render_semantic_diagnosis_feature(state):
 
     predictions = semantic_state.get("predictions") or []
     if not predictions:
-        st.info("Click `Run Semantic Differential` to view semantic confidence, reasoning, and clarification questions.")
+        st.info(
+            "Click `Run Semantic Differential` to view confidence gap, embedding-based reasoning, "
+            "and clarification questions."
+        )
         return
 
-    top_conf = float(predictions[0].get("confidence", 0.0))
     gap = _confidence_gap(predictions)
-    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1, metric2, metric3 = st.columns(3)
     with metric1:
-        st.metric("Top Confidence", f"{top_conf:.1%}")
-    with metric2:
         st.metric("Confidence Gap", f"{gap:.1%}")
-    with metric3:
-        st.metric("Engine", semantic_state.get("engine_mode", "unknown"))
-    with metric4:
+    with metric2:
         hint = semantic_state.get("category_hint") or "none"
         st.metric("Category Hint", str(hint))
+    with metric3:
+        st.metric("Candidates", str(semantic_state.get("candidate_count", 0)))
 
     st.caption(
-        f"Candidate diseases evaluated: {semantic_state.get('candidate_count', 0)} | "
-        "Confidence is normalized to the top semantic score."
+        "Reasoning below includes embedding similarity contribution for each ranked condition."
     )
 
     for rank, disease in enumerate(predictions[:5], start=1):
