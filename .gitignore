@@ -38,3 +38,13 @@ ava/runtime/**/uploads/
 # Test artifacts
 # --------------------
 test_image.jpeg
+
+# --------------------
+# Local history / machine-specific dumps
+# --------------------
+all_history_py_files.txt
+all_history_py_files_utf8.txt
+cursor_history_py_files.txt
+appdata_dirs.txt
+appdata_dirs_utf8.txt
+history_paths.txt
