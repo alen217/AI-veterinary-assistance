@@ -5,6 +5,7 @@ Implements feedback loop for continuous refinement
 """
 from typing import Dict, List, Tuple
 from dataclasses import dataclass
+import re
 import json
 
 
@@ -68,8 +69,9 @@ class DynamicDiseaseRanker:
         """Update when checking for specific disease symptoms"""
         # Use symptom_confirmed/ruled_out from answer if available
         answer_lower = answer.answer.lower()
-        is_positive = answer.symptom_confirmed or any(word in answer_lower for word in ['yes', 'yeah', 'present', 'has', 'showing'])
-        is_negative = answer.symptom_ruled_out or any(word in answer_lower for word in ['no', 'not', 'never', 'none'])
+        inferred_positive, inferred_negative = self._classify_yes_no(answer_lower)
+        is_positive = answer.symptom_confirmed or inferred_positive
+        is_negative = answer.symptom_ruled_out or inferred_negative
         
         # Get the symptom being checked
         symptom_checked = answer.symptom_to_check or answer.mentioned_symptom
@@ -81,7 +83,15 @@ class DynamicDiseaseRanker:
             if symptom_checked and symptom_checked in disease_symptoms:
                 current_conf = disease.get('confidence', 0.5)
                 
-                if is_positive:
+                # Negative evidence should override accidental positive token hits.
+                if is_negative:
+                    # Symptom NOT present - REDUCE confidence
+                    penalty = 0.10  # 10% penalty
+                    new_conf = max(0.0, current_conf - penalty)
+                    disease['confidence'] = new_conf
+                    print(f"[DOWN] Reduced {disease['name']} confidence: {current_conf:.2f} -> {new_conf:.2f}")
+
+                elif is_positive:
                     # Symptom confirmed - BOOST confidence significantly
                     boost = 0.15  # 15% boost
                     new_conf = min(1.0, current_conf + boost)
@@ -89,14 +99,41 @@ class DynamicDiseaseRanker:
                     disease['matched_additional_symptoms'] = disease.get('matched_additional_symptoms', [])
                     if symptom_checked not in disease['matched_additional_symptoms']:
                         disease['matched_additional_symptoms'].append(symptom_checked)
-                    print(f"✅ Boosted {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
-                    
-                elif is_negative:
-                    # Symptom NOT present - REDUCE confidence
-                    penalty = 0.10  # 10% penalty
-                    new_conf = max(0.0, current_conf - penalty)
-                    disease['confidence'] = new_conf
-                    print(f"⬇️  Reduced {disease['name']} confidence: {current_conf:.2f} → {new_conf:.2f}")
+                    print(f"[UP] Boosted {disease['name']} confidence: {current_conf:.2f} -> {new_conf:.2f}")
+
+    @staticmethod
+    def _classify_yes_no(answer_lower: str) -> Tuple[bool, bool]:
+        """
+        Return (is_positive, is_negative) from free-text answers.
+        Uses word boundaries to avoid false positives such as matching 'has' in 'hasn't'.
+        """
+        negative_patterns = [
+            r"\bno\b",
+            r"\bnot\b",
+            r"\bnever\b",
+            r"\bnone\b",
+            r"\bwithout\b",
+            r"\bhasn['’]?t\b",
+            r"\bhaven['’]?t\b",
+            r"\bdoesn['’]?t\b",
+            r"\bdidn['’]?t\b",
+            r"\bisn['’]?t\b",
+            r"\baren['’]?t\b",
+        ]
+        positive_patterns = [
+            r"\byes\b",
+            r"\byep\b",
+            r"\byeah\b",
+            r"\bpresent\b",
+            r"\bshowing\b",
+            r"\bexperiencing\b",
+            r"\bhas\b",
+            r"\bhave\b",
+        ]
+
+        is_negative = any(re.search(pattern, answer_lower) for pattern in negative_patterns)
+        is_positive = any(re.search(pattern, answer_lower) for pattern in positive_patterns)
+        return is_positive, is_negative
     
     def _update_for_symptom_details(self, answer: FollowUpAnswer):
         """Update based on symptom severity/duration details"""
@@ -109,7 +146,7 @@ class DynamicDiseaseRanker:
                 if disease.get('severity') == 'severe':
                     current_conf = disease['confidence']
                     disease['confidence'] = min(1.0, current_conf + 0.10)
-                    print(f"⚠️  Boosted severe disease {name}: {current_conf:.2f} → {disease['confidence']:.2f}")
+                    print(f"[SEVERE] Boosted severe disease {name}: {current_conf:.2f} -> {disease['confidence']:.2f}")
         
         # Duration indicators
         if any(word in answer_lower for word in ['chronic', 'weeks', 'months', 'long time']):
@@ -141,7 +178,7 @@ class DynamicDiseaseRanker:
             # Confirmed exposure - boost confidence
             boost = 0.12
             disease['confidence'] = min(1.0, current_conf + boost)
-            print(f"🎯 Risk factor confirmed for {disease['name']}: {current_conf:.2f} → {disease['confidence']:.2f}")
+            print(f"[RISK] Risk factor confirmed for {disease['name']}: {current_conf:.2f} -> {disease['confidence']:.2f}")
     
     def get_ranked_diseases(self) -> List[Dict]:
         """Get diseases sorted by current confidence"""

@@ -1,5 +1,6 @@
 import streamlit as st
 from main import VeterinaryAIAssistant
+from nlp_patient_analyzer import VeterinaryNLPAnalyzer
 
 st.set_page_config(
     page_title="Veterinary AI Assistant",
@@ -57,8 +58,9 @@ if analyze_btn and patient_text.strip():
     with tab2:
         if result["patient_analysis"].symptoms:
             for s in result["patient_analysis"].symptoms:
+                symptom_label = VeterinaryNLPAnalyzer.format_symptom_label(s.symptom)
                 st.markdown(f"""
-                **{s.symptom.replace('_', ' ').title()}**  
+                **{symptom_label}**  
                 Severity: {s.severity}  
                 Duration: {s.duration}  
                 Frequency: {s.frequency}

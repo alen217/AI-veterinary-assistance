@@ -110,7 +110,7 @@ try:
     from dynamic_confidence_updater import FollowUpAnswer
     
     print("🏥 Initializing AI Assistant...")
-    assistant = VeterinaryAIAssistant(use_ai_questions=True)
+    assistant = VeterinaryAIAssistant()
     
     # Test case
     patient_text = "My 5 year old dog has been vomiting for 2 days and seems very lethargic. Not eating much."

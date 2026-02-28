@@ -176,7 +176,7 @@ def test_full_integration():
         from main import VeterinaryAIAssistant
         
         print("🏥 Initializing VeterinaryAIAssistant...")
-        assistant = VeterinaryAIAssistant(use_ai_questions=True)
+        assistant = VeterinaryAIAssistant()
         
         # Test case
         patient_text = "My 5 year old Golden Retriever has been vomiting for 2 days and seems very tired"

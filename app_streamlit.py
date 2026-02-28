@@ -12,20 +12,12 @@ from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 from pathlib import Path
 from main import VeterinaryAIAssistant
+from nlp_patient_analyzer import VeterinaryNLPAnalyzer
 from user_database import UserDatabase, get_db
 from mongo_disease_repository import MongoDiseaseRepository
 from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
 from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
-
-# Try to load AI-powered question generator
-try:
-    from custom_ai_followup import CustomAIFollowUpGenerator
-    AI_MODEL_AVAILABLE = True
-    print("✅ Custom AI follow-up model loaded successfully")
-except Exception as e:
-    AI_MODEL_AVAILABLE = False
-    print(f"⚠️  Using template-based questions (AI model not available: {e})")
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
@@ -280,12 +272,67 @@ def init_session_state():
             "follow_up_questions": [],
             "questions_asked": 0,  # Track number of questions
             "max_questions": 8,  # Maximum questions before stopping
-            "confidence_threshold": 0.85  # Stop when top disease reaches this
+            "confidence_threshold": 0.85,  # Stop when top disease reaches this
+            "ruled_out_symptoms": []
         }
 
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+def _is_negative_answer(answer_text):
+    import re
+    negative_patterns = [
+        r"\bno\b", r"\bnot\b", r"\bnever\b", r"\bnone\b", r"\bwithout\b",
+        r"\bhasn['’]?t\b", r"\bhaven['’]?t\b", r"\bdoesn['’]?t\b", r"\bdidn['’]?t\b",
+        r"\bisn['’]?t\b", r"\baren['’]?t\b",
+    ]
+    return any(re.search(pattern, answer_text) for pattern in negative_patterns)
+
+def _is_positive_answer(answer_text):
+    import re
+    positive_patterns = [
+        r"\byes\b", r"\byep\b", r"\byeah\b", r"\bpresent\b", r"\bshowing\b",
+        r"\bexperiencing\b", r"\bhas\b", r"\bhave\b",
+    ]
+    return any(re.search(pattern, answer_text) for pattern in positive_patterns)
+
+def _collect_symptom_phrase_map(symptoms, matches):
+    phrases = set()
+    for s in symptoms:
+        phrases.add(s.symptom.replace("_", " ").lower())
+    for m in matches:
+        for s in m.get("common_symptoms", []):
+            phrases.add(s.replace("_", " ").lower())
+    return phrases
+
+def _format_symptom_label(symptom_key: str) -> str:
+    return VeterinaryNLPAnalyzer.format_symptom_label(symptom_key)
+
+def _extract_symptom_from_question(question, symptoms, matches):
+    if not question: return None
+    q_lower = question.lower()
+    for s in symptoms:
+        if s.symptom.replace("_", " ").lower() in q_lower:
+            return s.symptom
+    for m in matches:
+        for s in m.get("common_symptoms", []):
+            if s.replace("_", " ").lower() in q_lower:
+                return s
+    return None
+
+def _is_question_relevant(question, symptoms, matches):
+    q_lower = (question or "").lower()
+    phrase_to_symptom = _collect_symptom_phrase_map(symptoms, matches)
+    if any(phrase in q_lower for phrase in phrase_to_symptom):
+        return True
+
+    # Allow essential triage questions even when no exact symptom phrase is present.
+    essential_markers = [
+        "how long", "how severe", "how often", "getting worse", "eating",
+        "drinking", "medication", "allerg", "diet", "environment",
+    ]
+    return any(marker in q_lower for marker in essential_markers)
 
 # Login page
 def show_login_page():
@@ -461,13 +508,8 @@ def show_admin_panel():
         st.write("**Last Updated:** February 2026")
         
         st.markdown("---")
-        st.markdown("#### AI Follow-Up System")
-        if AI_MODEL_AVAILABLE:
-            st.success("✅ AI Model Active - Using Neural Network for Questions")
-            st.info("The AI automatically narrows down diseases through intelligent follow-up questions.")
-        else:
-            st.error("❌ AI Model Not Available - Fallback to Templates")
-            st.warning("For best results, train the model:\n```bash\ncd ml_training/vet_followup_qa\npython train.py\n```")
+        st.markdown("#### Follow-Up System")
+        st.info("ℹ️ Using Structural Question Generator")
 
 
 def show_main_app():
@@ -645,6 +687,9 @@ def show_diagnosis_page():
                 state["symptoms"] = analysis["patient_analysis"].symptoms
                 state["diseases"] = analysis.get("disease_extractions", []) 
                 state["matches"] = analysis.get("database_matches", [])
+                state["answers"] = {}
+                state["questions_asked"] = 0
+                state["ruled_out_symptoms"] = []
                 
                 # Initialize dynamic disease ranker for AI-powered prioritization
                 if state["matches"]:
@@ -754,9 +799,10 @@ def show_diagnosis_page():
             for idx, symptom in enumerate(symptoms):
                 with cols[idx % 3]:
                     severity_class = f"severity-{symptom.severity}" if symptom.severity else "severity-mild"
+                    symptom_label = _format_symptom_label(symptom.symptom)
                     st.markdown(f"""
                     <div class="info-card">
-                    <strong>{symptom.symptom}</strong><br>
+                    <strong>{symptom_label}</strong><br>
                     <span class="severity-badge {severity_class}">
                     {symptom.severity or 'Unknown'}
                     </span><br>
@@ -766,9 +812,9 @@ def show_diagnosis_page():
         else:
             st.info("No specific symptoms detected.")
         
-        # --- STEP 3 & 4: AI-Powered Follow-up Questions ---
+        # --- STEP 3 & 4: Follow-up Questions ---
         st.markdown("---")
-        st.markdown("### 🤖 AI Follow-up Analysis")
+        st.markdown("### 🤖 Follow-up Analysis")
         
         # Check stopping conditions
         top_disease_confidence = state["matches"][0]['confidence'] if state["matches"] else 0
@@ -792,86 +838,45 @@ def show_diagnosis_page():
             len(state["matches"]) > 1
         )
         
+        def _is_valid_q(q):
+            if not q or q.question in state.get("answers", {}):
+                return False
+            
+            cat = getattr(q, 'category', '')
+            
+            # Check if testing specific symptom that is already processed
+            sym = _extract_symptom_from_question(q.question, state.get("symptoms", []), state.get("matches", []))
+            
+            if sym:
+                # Always block questions about ruled out symptoms
+                if sym in state.get("ruled_out_symptoms", []):
+                    return False
+                
+                # If asking if the symptom is present (confirmation/additional), block if we already know it's present.
+                # Do NOT block if asking for 'symptom_details' (how long, how severe, etc) about a known symptom.
+                if cat in ['disease_confirmation', 'additional_symptoms', '']:
+                    if any(s.symptom == sym for s in state.get("symptoms", [])):
+                        return False
+            return True
+
         next_q = None
         
         if should_continue:
-            # FORCE AI MODEL USAGE
-            if AI_MODEL_AVAILABLE:
-                try:
-                    # Initialize AI generator if not already done
-                    if 'ai_generator' not in st.session_state:
-                        st.session_state.ai_generator = CustomAIFollowUpGenerator()
-                        st.success("✅ AI Model Initialized Successfully")
-                    
-                    # Prepare data for AI model
-                    patient_dict = {
-                        'animal_type': state["patient_info"].animal_type,
-                        'age': state["patient_info"].age,
-                        'breed': state["patient_info"].breed,
-                        'weight': state["patient_info"].weight
-                    }
-                    
-                    symptoms_dict = [
-                        {
-                            'symptom': s.symptom,
-                            'severity': s.severity,
-                            'duration': s.duration
-                        } for s in state["symptoms"]
-                    ]
-                    
-                    diseases_dict = [
-                        {
-                            'disease_name': d.disease_name if hasattr(d, 'disease_name') else d.get('name', ''),
-                            'confidence': d.confidence if hasattr(d, 'confidence') else d.get('confidence', 0)
-                        } for d in state["diseases"]
-                    ]
-                    
-                    # Generate AI questions
-                    ai_questions = st.session_state.ai_generator.generate_questions(
-                        patient_info=patient_dict,
-                        symptoms=symptoms_dict,
-                        suspected_diseases=diseases_dict,
-                        database_matches=state["matches"],
-                        max_questions=1,
-                        previous_answers=state.get("answers", {})
-                    )
-                    
-                    if ai_questions:
-                        ai_q = ai_questions[0]
-                        # Convert AI question to FollowUpQuestion format
-                        from follow_up_questions import FollowUpQuestion
-                        next_q = FollowUpQuestion(
-                            category=ai_q.category,
-                            question=ai_q.question,
-                            priority=ai_q.priority,
-                            reasoning=ai_q.reasoning
-                        )
-                        st.info(f"💡 **AI Strategy:** {ai_q.reasoning}")
-                    
-                except Exception as ai_error:
-                    st.error(f"⚠️ AI Error: {ai_error}")
-                    # Fallback to templates
-                    generator = FollowUpQuestionGenerator(repo)
-                    next_q = generator.get_next_question(
-                        state["patient_info"],
-                        state["symptoms"],
-                        state["diseases"]
-                    )
-            else:
-                # Fallback if AI not available
-                st.warning("⚠️ Using template-based questions (AI model not loaded)")
-                generator = FollowUpQuestionGenerator(repo)
-                next_q = generator.get_next_question(
-                    state["patient_info"],
-                    state["symptoms"],
-                    state["diseases"]
-                )
+            # Using template-based questions
+            generator = FollowUpQuestionGenerator(repo)
+            template_qs = generator.generate_questions(
+                state["patient_info"],
+                state["symptoms"],
+                state["diseases"],
+                max_questions=5
+            )
+            next_q = next((q for q in template_qs if _is_valid_q(q)), None)
 
-        # Check if question exists AND if it hasn't been answered yet
-        if next_q and next_q.question not in state["answers"]:
+        if next_q:
             st.markdown(f"**Question {questions_asked + 1}:**")
+            displayed_question = f"{next_q.question} [{next_q.reasoning}]"
             answer = st.text_input(
-                next_q.question,
+                displayed_question,
                 key=f"answer_{hash(next_q.question)}",
                 placeholder="Type your answer here..."
             )
@@ -883,39 +888,41 @@ def show_diagnosis_page():
                 else:
                     # Increment question counter
                     state["questions_asked"] = state.get("questions_asked", 0) + 1
+
+                    answer_lower = answer.lower()
+                    is_symptom_ruled_out = _is_negative_answer(answer_lower)
+                    is_symptom_confirmed = _is_positive_answer(answer_lower) and not is_symptom_ruled_out
+                    
+                    symptom_to_check = _extract_symptom_from_question(
+                        next_q.question,
+                        state.get("symptoms", []),
+                        state.get("matches", [])
+                    )
+                    
+                    if is_symptom_ruled_out:
+                        if symptom_to_check and symptom_to_check not in state.get("ruled_out_symptoms", []):
+                            state.setdefault("ruled_out_symptoms", []).append(symptom_to_check)
+                    elif is_symptom_confirmed:
+                        if symptom_to_check and not any(s.symptom == symptom_to_check for s in state.get("symptoms", [])):
+                            from nlp_patient_analyzer import SymptomExtraction
+                            state["symptoms"].append(SymptomExtraction(
+                                symptom=symptom_to_check,
+                                duration=None,
+                                severity=None,
+                                frequency=None
+                            ))
+
                     # Update symptoms based on answer
-                    apply_answer(state["symptoms"], next_q, answer)
+                    apply_answer(state["symptoms"], next_q, answer, symptom_to_check)
                     
                     # Store the answer history
                     state["answers"][next_q.question] = answer
                     
-                    # Use AI-powered dynamic confidence updates
+                    # Use programmatic dynamic confidence updates
                     if state["disease_ranker"]:
-                        # Determine answer type and category
-                        answer_lower = answer.lower()
-                        is_symptom_confirmed = any(word in answer_lower for word in ['yes', 'has', 'showing', 'present', 'experiencing'])
-                        is_symptom_ruled_out = any(word in answer_lower for word in ['no', 'not', 'never', 'none', 'hasn\'t'])
+                        mentioned_symptom = symptom_to_check
                         
-                        # Extract symptom from question - comprehensive list
-                        symptom_keywords = [
-                            'vomiting', 'diarrhea', 'fever', 'lethargy', 'coughing', 'limping', 'seizure',
-                            'appetite', 'drinking', 'discharge', 'scratching', 'licking', 'skin',
-                            'weight', 'energy', 'breathing', 'pain', 'swelling', 'bleeding',
-                            'loss_of_appetite', 'dehydration', 'itching', 'skin_lesion'
-                        ]
-                        mentioned_symptom = next((kw for kw in symptom_keywords if kw in next_q.question.lower()), None)
-                        
-                        # Try to extract symptom from state diseases for better matching
-                        symptom_to_check = mentioned_symptom
-                        if not symptom_to_check and state["matches"]:
-                            # Check if question relates to common symptoms of top disease
-                            top_disease = state["matches"][0]
-                            for sym in top_disease.get('common_symptoms', []):
-                                if sym.replace('_', ' ') in next_q.question.lower():
-                                    symptom_to_check = sym
-                                    break
-                        
-                        # Create answer object for AI processing
+                        # Create answer object for processing
                         follow_up_answer = FollowUpAnswer(
                             question=next_q.question,
                             answer=answer,
@@ -927,11 +934,21 @@ def show_diagnosis_page():
                             severity_level=answer if 'severe' in answer.lower() else None
                         )
                         
-                        # Update disease rankings with AI
+                        # Update disease rankings
                         updated_diseases = state["disease_ranker"].update_confidence_with_answer(follow_up_answer)
                         state["matches"] = updated_diseases
                         
-                        st.info(f"🧠 AI updated disease priorities based on your answer!")
+                        # Update disease objects so next question is based on the updated ranking
+                        from nlp_patient_analyzer import DiseaseExtraction
+                        state["diseases"] = [
+                            DiseaseExtraction(
+                                disease_name=d.get("name", ""),
+                                confidence=d.get("confidence", 0.0),
+                                related_symptoms=d.get("common_symptoms", [])
+                            ) for d in updated_diseases
+                        ]
+                        
+                        st.info(f"🧠 Disease priorities updated based on your answer!")
                     else:
                         # Fallback: Re-run disease analysis
                         symptom_text = " ".join(
@@ -992,9 +1009,6 @@ def show_diagnosis_page():
                     "max_questions": 8,
                     "confidence_threshold": 0.85
                 }
-                # Clear AI generator to reset state
-                if 'ai_generator' in st.session_state:
-                    del st.session_state.ai_generator
                 st.rerun()
 
         # Diseases
@@ -1198,3 +1212,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
