@@ -19,6 +19,8 @@ from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
 from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
 from disease_predictor import DiseasePredictor
+from audio_recorder_streamlit import audio_recorder
+import whisper
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
@@ -835,13 +837,70 @@ def show_diagnosis_page():
     </div>
     """, unsafe_allow_html=True)
 
+    if "patient_text_input" not in st.session_state:
+        st.session_state.patient_text_input = ""
+    if "last_audio_bytes" not in st.session_state:
+        st.session_state.last_audio_bytes = None
+
     # Input form
-    patient_text = st.text_area(
-        "Patient Description",
-        height=200,
-        placeholder="Example: My 3-year-old golden retriever has been coughing for a week. He seems lethargic and has a fever. His breathing sounds labored sometimes. He has been fully vaccinated.",
-        help="Describe the patient's symptoms, duration, severity, and any relevant medical history."
-    )
+    st.markdown("#### Describe or Speak Symptoms")
+    
+    col_text, col_voice = st.columns([3, 1])
+    
+    with col_voice:
+        st.write("🎙️ **Voice Input**")
+        audio_bytes = audio_recorder(
+            text="Click to record",
+            recording_color="#e83e8c",
+            neutral_color="#6c757d",
+            icon_name="microphone",
+            icon_size="2x"
+        )
+        
+        # Display transcribed text or status
+        if audio_bytes and audio_bytes != st.session_state.last_audio_bytes:
+            st.session_state.last_audio_bytes = audio_bytes
+            with st.spinner("Transcribing..."):
+                try:
+                    # Save temporarily
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                        f.write(audio_bytes)
+                        tmp_audio_path = f.name
+                    
+                    # Load model (cached to avoid reloading)
+                    @st.cache_resource(show_spinner=False)
+                    def load_whisper_model():
+                        return whisper.load_model("base")
+                        
+                    model = load_whisper_model()
+                    result = model.transcribe(tmp_audio_path)
+                    transcribed_text = result["text"].strip()
+                    
+                    # Cleanup
+                    try:
+                        os.unlink(tmp_audio_path)
+                    except:
+                        pass
+                        
+                    if st.session_state.patient_text_input:
+                        st.session_state.patient_text_input = f"{st.session_state.patient_text_input}\n{transcribed_text}"
+                    else:
+                        st.session_state.patient_text_input = transcribed_text
+                        
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Transcription failed: {e}")
+                    
+    with col_text:
+        patient_text = st.text_area(
+            "Patient Description",
+            height=200,
+            key="patient_text_input",
+            placeholder="Example: My 3-year-old golden retriever has been coughing for a week. He seems lethargic and has a fever. His breathing sounds labored sometimes. He has been fully vaccinated.",
+            help="Describe the patient's symptoms, duration, severity, and any relevant medical history."
+        )
+                    
+    final_patient_text = patient_text
 
     # Define uploaded_image before use
     uploaded_image = st.file_uploader(
@@ -861,7 +920,7 @@ def show_diagnosis_page():
         return
 
     # --- STEP 2: Handle Initial Analysis ---
-    if analyze_button and patient_text:
+    if analyze_button and final_patient_text:
         with st.spinner("🔄 Analyzing patient data..."):
             try:
                 assistant = VeterinaryAIAssistant(repo)
@@ -888,7 +947,7 @@ def show_diagnosis_page():
                 
                 # STEP 2 LOGIC: Run Analysis without questions, store state
                 analysis = assistant.analyze_patient_text(
-                    patient_text,
+                    final_patient_text,
                     generate_questions=False  # IMPORTANT
                 )
 
@@ -900,7 +959,7 @@ def show_diagnosis_page():
                 state["answers"] = {}
                 state["questions_asked"] = 0
                 state["ruled_out_symptoms"] = []
-                state["raw_patient_text"] = patient_text
+                state["raw_patient_text"] = final_patient_text
                 state["semantic_state"] = _default_semantic_state()
                 
                 # Initialize dynamic disease ranker for AI-powered prioritization
@@ -934,7 +993,7 @@ def show_diagnosis_page():
                     # Create history record
                     history_record = {
                         "username": st.session_state.username,
-                        "patient_text": patient_text,
+                        "patient_text": final_patient_text,
                         "patient_info": {
                             "animal_type": state["patient_info"].animal_type,
                             "age": state["patient_info"].age,

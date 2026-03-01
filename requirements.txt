@@ -17,6 +17,9 @@ spacy>=3.7.0
 nltk>=3.8.0
 # Optional semantic diagnosis feature
 sentence-transformers>=2.7.0
+# Voice Input / Audio Processing
+openai-whisper>=20231117
+audio-recorder-streamlit>=0.0.8
 
 # ==========================================
 # Deep Learning & Computer Vision
