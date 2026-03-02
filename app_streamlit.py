@@ -1121,7 +1121,8 @@ def show_diagnosis_page():
                                 symptom=symptom_to_check,
                                 duration=None,
                                 severity=None,
-                                frequency=None
+                                frequency=None,
+                                context=state.get("raw_patient_text") or answer
                             ))
 
                     # Update symptoms based on answer

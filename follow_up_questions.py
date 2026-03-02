@@ -600,8 +600,8 @@ if __name__ == "__main__":
     patient = PatientInfo(animal_type="dog", age="5 years", breed="labrador", gender="male", weight="65 lbs")
 
     symptoms = [
-        SymptomExtraction(symptom="vomiting",  duration="3 days", severity="moderate", frequency=None),
-        SymptomExtraction(symptom="diarrhea",  duration="3 days", severity=None,       frequency="intermittent"),
+        SymptomExtraction(symptom="vomiting",  duration="3 days", severity="moderate", frequency=None, context="Owner reports vomiting for 3 days"),
+        SymptomExtraction(symptom="diarrhea",  duration="3 days", severity=None,       frequency="intermittent", context="Owner reports intermittent diarrhea for 3 days"),
     ]
 
     diseases = [
