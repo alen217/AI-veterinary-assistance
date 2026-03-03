@@ -48,10 +48,10 @@ class PatientInfo:
 class SymptomExtraction:
     """Extracted symptom information"""
     symptom: str
-    duration: Optional[str]
-    severity: Optional[str]
-    frequency: Optional[str]
-    context: Optional[str]
+    duration: Optional[str] = None
+    severity: Optional[str] = None
+    frequency: Optional[str] = None
+    context: Optional[str] = None
 
 
 @dataclass
