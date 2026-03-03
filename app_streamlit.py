@@ -873,14 +873,29 @@ def show_diagnosis_page():
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                         f.write(audio_bytes)
                         tmp_audio_path = f.name
-                    
+                    ui_lang = st.session_state.get("ui_language", "English")
+                    lang_mapping = {
+                        "English": "en",
+                        "Hindi (हिन्दी)": "hi",
+                        "Malayalam (മലയാളം)": "ml"
+                    }
+                    target_lang = lang_mapping.get(ui_lang, "en")
+
                     # Load model (cached to avoid reloading)
                     @st.cache_resource(show_spinner=False)
-                    def load_whisper_model():
-                        return whisper.load_model("base")
+                    def load_whisper_model(lang):
+                        if lang == "en":
+                            return whisper.load_model("base")
+                        else:
+                            return whisper.load_model("large")
                         
-                    model = load_whisper_model()
-                    result = model.transcribe(tmp_audio_path)
+                    model = load_whisper_model(target_lang)
+                    
+                    if target_lang == "en":
+                        result = model.transcribe(tmp_audio_path, language="en", fp16=False)
+                    else:
+                        result = model.transcribe(tmp_audio_path, language=target_lang, task="translate", fp16=False)
+                        
                     transcribed_text = result["text"].strip()
                     
                     # Cleanup
@@ -888,6 +903,11 @@ def show_diagnosis_page():
                         os.unlink(tmp_audio_path)
                     except:
                         pass
+                        
+                    if not transcribed_text:
+                        st.warning(T("No speech detected. Please try recording again."))
+                        st.session_state.last_audio_bytes = None
+                        st.rerun()
                         
                     if st.session_state.patient_text_input:
                         st.session_state.patient_text_input = f"{st.session_state.patient_text_input}\n{transcribed_text}"
@@ -1101,13 +1121,11 @@ def show_diagnosis_page():
         confidence_threshold = state.get("confidence_threshold", 0.85)
         
         # Display progress
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             st.metric(T("Questions Asked"), f"{questions_asked}/{max_questions}")
         with col2:
             st.metric(T("Top Confidence"), f"{top_disease_confidence:.1%}")
-        with col3:
-            st.metric(T("Target Confidence"), f"{confidence_threshold:.1%}")
         
         # Determine if we should continue asking questions
         should_continue = (
@@ -1247,8 +1265,7 @@ def show_diagnosis_page():
             # Diagnosis complete
             st.markdown("---")
             if top_disease_confidence >= confidence_threshold:
-                st.success(f"✅ **Diagnosis Complete!** {T("Diagnosis Complete!")} Achieved {top_disease_confidence:.1%} confidence")
-                st.balloons()
+                st.success(f"✅ **Diagnosis Complete!** {T('Diagnosis Complete!')} Achieved {top_disease_confidence:.1%} confidence")
             elif questions_asked >= max_questions:
                 st.info(f"📊 **Analysis Complete** - Maximum questions reached ({max_questions})")
             elif len(state["matches"]) == 1:
