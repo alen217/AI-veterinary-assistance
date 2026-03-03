@@ -19,6 +19,9 @@ from follow_up_questions import FollowUpQuestionGenerator
 from consultation_state_updater import apply_answer
 from dynamic_confidence_updater import DynamicDiseaseRanker, FollowUpAnswer
 from disease_predictor import DiseasePredictor
+from audio_recorder_streamlit import audio_recorder
+import whisper
+from ui_translations import T
 
 # Load environment variables
 _DOTENV_PATH = find_dotenv(usecwd=True) or str(Path(__file__).resolve().parent / ".env")
@@ -602,7 +605,7 @@ def show_login_page():
 
 
 def show_admin_panel():
-    st.markdown("## 👨‍💼 Admin Panel")
+    st.markdown(f"{T('Admin Panel Page')}")
 
     tabs = st.tabs(["User Management", "Database Stats", "System Settings"])
 
@@ -724,8 +727,14 @@ def show_admin_panel():
 
 def show_main_app():
     with st.sidebar:
-        st.markdown(f"### 👤 Welcome, {st.session_state.username}!")
-        st.markdown(f"**Role:** {st.session_state.role}")
+        st.session_state.ui_language = st.selectbox(
+            T("Language"), 
+            options=["English", "Hindi (हिन्दी)", "Malayalam (മലയാളം)"],
+            index=["English", "Hindi (हिन्दी)", "Malayalam (മലയാളം)"].index(st.session_state.get("ui_language", "English")),
+            key="main_lang_selector"
+        )
+        st.markdown(f"### 👤 {T('Welcome')}, {st.session_state.username}!")
+        st.markdown(f"**{T('Role:')}** {st.session_state.role}")
         st.markdown("---")
         options = ["🏠 Home", "🔍 Diagnosis", "📚 Disease Database", "📊 History"]
         if st.session_state.role == "admin":
@@ -751,8 +760,8 @@ def show_main_app():
 
 def show_home_page():
     st.markdown('<div class="header-container">', unsafe_allow_html=True)
-    st.markdown('<h1 class="header-title">🐾 Veterinary AI Assistant</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="header-subtitle">Advanced AI-Powered Veterinary Diagnosis System</p>', unsafe_allow_html=True)
+    st.markdown(f'<h1 class="header-title">{T("🐾 Veterinary AI Assistant")}</h1>', unsafe_allow_html=True)
+    st.markdown(f'<p class="header-subtitle">{T("Advanced AI-Powered Veterinary Diagnosis System")}</p>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Stats
@@ -767,7 +776,7 @@ def show_home_page():
             st.markdown(f"""
             <div class="stat-box">
                 <div class="stat-number">{disease_count}</div>
-                <div class="stat-label">Diseases</div>
+                <div class="stat-label">{T('Diseases')}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -775,7 +784,7 @@ def show_home_page():
             st.markdown(f"""
             <div class="stat-box">
                 <div class="stat-number">{analysis_count}</div>
-                <div class="stat-label">Analyses</div>
+                <div class="stat-label">{T('Analyses')}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -783,7 +792,7 @@ def show_home_page():
             st.markdown(f"""
             <div class="stat-box">
                 <div class="stat-number">24/7</div>
-                <div class="stat-label">Available</div>
+                <div class="stat-label">{T('Available')}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -791,43 +800,43 @@ def show_home_page():
         st.error(f"❌ Error loading stats: {e}")
 
     # Features
-    st.markdown("## 🌟 Key Features")
+    st.markdown(f"## {T('Key Features')}")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("""
+        st.markdown(f"""
         <div class="info-card">
-        <h3>🔬 AI-Powered Analysis</h3>
-        <p>Advanced natural language processing to analyze patient symptoms and medical history.</p>
+        <h3>{T('AI-Powered Analysis')}</h3>
+        <p>{T('AI-Powered Analysis Desc')}</p>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("""
+        st.markdown(f"""
         <div class="info-card">
-        <h3>📚 Comprehensive Database</h3>
-        <p>Access to extensive veterinary disease database with treatments and prevention methods.</p>
+        <h3>{T('Comprehensive Database')}</h3>
+        <p>{T('Comprehensive Database Desc')}</p>
         </div>
         """, unsafe_allow_html=True)
 
     with col2:
-        st.markdown("""
+        st.markdown(f"""
         <div class="info-card">
-        <h3>⚡ Real-time Diagnosis</h3>
-        <p>Get instant disease predictions and treatment recommendations.</p>
+        <h3>{T('Real-time Diagnosis')}</h3>
+        <p>{T('Real-time Diagnosis Desc')}</p>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("""
+        st.markdown(f"""
         <div class="info-card">
-        <h3>🔒 Secure & Private</h3>
-        <p>User authentication and secure data handling for patient information.</p>
+        <h3>{T('Secure & Private')}</h3>
+        <p>{T('Secure & Private Desc')}</p>
         </div>
         """, unsafe_allow_html=True)
 
 
 def show_diagnosis_page():
-    st.markdown("## 🔍 Patient Diagnosis")
+    st.markdown(T("Patient Diagnosis"))
 
     st.markdown("""
     <div class="info-card">
@@ -835,23 +844,80 @@ def show_diagnosis_page():
     </div>
     """, unsafe_allow_html=True)
 
+    if "patient_text_input" not in st.session_state:
+        st.session_state.patient_text_input = ""
+    if "last_audio_bytes" not in st.session_state:
+        st.session_state.last_audio_bytes = None
+
     # Input form
-    patient_text = st.text_area(
-        "Patient Description",
-        height=200,
-        placeholder="Example: My 3-year-old golden retriever has been coughing for a week. He seems lethargic and has a fever. His breathing sounds labored sometimes. He has been fully vaccinated.",
-        help="Describe the patient's symptoms, duration, severity, and any relevant medical history."
-    )
+    st.markdown(T("Describe or Speak Symptoms"))
+    
+    col_text, col_voice = st.columns([3, 1])
+    
+    with col_voice:
+        st.write("🎙️ **Voice Input**")
+        audio_bytes = audio_recorder(
+            text="Click to record",
+            recording_color="#e83e8c",
+            neutral_color="#6c757d",
+            icon_name="microphone",
+            icon_size="2x"
+        )
+        
+        # Display transcribed text or status
+        if audio_bytes and audio_bytes != st.session_state.last_audio_bytes:
+            st.session_state.last_audio_bytes = audio_bytes
+            with st.spinner(T("Transcribing")):
+                try:
+                    # Save temporarily
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                        f.write(audio_bytes)
+                        tmp_audio_path = f.name
+                    
+                    # Load model (cached to avoid reloading)
+                    @st.cache_resource(show_spinner=False)
+                    def load_whisper_model():
+                        return whisper.load_model("base")
+                        
+                    model = load_whisper_model()
+                    result = model.transcribe(tmp_audio_path)
+                    transcribed_text = result["text"].strip()
+                    
+                    # Cleanup
+                    try:
+                        os.unlink(tmp_audio_path)
+                    except:
+                        pass
+                        
+                    if st.session_state.patient_text_input:
+                        st.session_state.patient_text_input = f"{st.session_state.patient_text_input}\n{transcribed_text}"
+                    else:
+                        st.session_state.patient_text_input = transcribed_text
+                        
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Transcription failed: {e}")
+                    
+    with col_text:
+        patient_text = st.text_area(
+            "Patient Description",
+            height=200,
+            key="patient_text_input",
+            placeholder="Example: My 3-year-old golden retriever has been coughing for a week. He seems lethargic and has a fever. His breathing sounds labored sometimes. He has been fully vaccinated.",
+            help="Describe the patient's symptoms, duration, severity, and any relevant medical history."
+        )
+                    
+    final_patient_text = patient_text
 
     # Define uploaded_image before use
     uploaded_image = st.file_uploader(
-        "Upload skin image (optional)",
+        T("Upload skin image (optional)"),
         type=["jpg", "jpeg", "png"]
     )
 
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        analyze_button = st.button("🔍 Analyze Patient", use_container_width=True)
+        analyze_button = st.button(T("Analyze Patient"), use_container_width=True)
 
     # Initialize Repository for use in both analysis and question generation
     try:
@@ -861,8 +927,8 @@ def show_diagnosis_page():
         return
 
     # --- STEP 2: Handle Initial Analysis ---
-    if analyze_button and patient_text:
-        with st.spinner("🔄 Analyzing patient data..."):
+    if analyze_button and final_patient_text:
+        with st.spinner(T("Analyzing patient data")):
             try:
                 assistant = VeterinaryAIAssistant(repo)
                 
@@ -888,7 +954,7 @@ def show_diagnosis_page():
                 
                 # STEP 2 LOGIC: Run Analysis without questions, store state
                 analysis = assistant.analyze_patient_text(
-                    patient_text,
+                    final_patient_text,
                     generate_questions=False  # IMPORTANT
                 )
 
@@ -900,7 +966,7 @@ def show_diagnosis_page():
                 state["answers"] = {}
                 state["questions_asked"] = 0
                 state["ruled_out_symptoms"] = []
-                state["raw_patient_text"] = patient_text
+                state["raw_patient_text"] = final_patient_text
                 state["semantic_state"] = _default_semantic_state()
                 
                 # Initialize dynamic disease ranker for AI-powered prioritization
@@ -934,7 +1000,7 @@ def show_diagnosis_page():
                     # Create history record
                     history_record = {
                         "username": st.session_state.username,
-                        "patient_text": patient_text,
+                        "patient_text": final_patient_text,
                         "patient_info": {
                             "animal_type": state["patient_info"].animal_type,
                             "age": state["patient_info"].age,
@@ -983,28 +1049,28 @@ def show_diagnosis_page():
     
     if state["patient_info"]:
         # Patient Info
-        st.markdown("### 👤 Patient Information")
+        st.markdown(T("Patient Information"))
         patient_info = state["patient_info"]
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Species", patient_info.animal_type or "Unknown")
+            st.metric(T("Species"), patient_info.animal_type or "Unknown")
         with col2:
-            st.metric("Age", patient_info.age or "Unknown")
+            st.metric(T("Age"), patient_info.age or "Unknown")
         with col3:
-            st.metric("Breed", patient_info.breed or "Unknown")
+            st.metric(T("Breed"), patient_info.breed or "Unknown")
         with col4:
-            st.metric("Weight", patient_info.weight or "Unknown")
+            st.metric(T("Weight"), patient_info.weight or "Unknown")
 
         # Skin Image Analysis
         if state["skin_result"]:
             skin_result = state["skin_result"]
-            st.markdown("## 🧬 Skin Image Analysis (AI-assisted)")
+            st.markdown(T("Skin Image Analysis (AI-assisted)"))
             st.markdown(f"**Predicted condition:** `{skin_result['prediction']}`")
             st.markdown(f"**Model confidence:** `{skin_result['confidence']:.2%}`")
             st.info("This result is AI-assisted and used as supporting evidence.")
 
         # Symptoms
-        st.markdown("### 🩺 Detected Symptoms")
+        st.markdown(T("Detected Symptoms"))
         symptoms = state["symptoms"]
         if symptoms:
             cols = st.columns(3)
@@ -1018,15 +1084,15 @@ def show_diagnosis_page():
                     <span class="severity-badge {severity_class}">
                     {symptom.severity or 'Unknown'}
                     </span><br>
-                    <small>Duration: {symptom.duration or 'Not specified'}</small>
+                    <small>{T("Duration")}: {symptom.duration or 'Not specified'}</small>
                     </div>
                     """, unsafe_allow_html=True)
         else:
-            st.info("No specific symptoms detected.")
+            st.info(T("No specific symptoms detected"))
         
         # --- STEP 3 & 4: Follow-up Questions ---
         st.markdown("---")
-        st.markdown("### 🤖 Follow-up Analysis")
+        st.markdown(T("Follow-up Analysis"))
         
         # Check stopping conditions
         top_disease_confidence = state["matches"][0]['confidence'] if state["matches"] else 0
@@ -1037,11 +1103,11 @@ def show_diagnosis_page():
         # Display progress
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Questions Asked", f"{questions_asked}/{max_questions}")
+            st.metric(T("Questions Asked"), f"{questions_asked}/{max_questions}")
         with col2:
-            st.metric("Top Confidence", f"{top_disease_confidence:.1%}")
+            st.metric(T("Top Confidence"), f"{top_disease_confidence:.1%}")
         with col3:
-            st.metric("Target Confidence", f"{confidence_threshold:.1%}")
+            st.metric(T("Target Confidence"), f"{confidence_threshold:.1%}")
         
         # Determine if we should continue asking questions
         should_continue = (
@@ -1085,18 +1151,18 @@ def show_diagnosis_page():
             next_q = next((q for q in template_qs if _is_valid_q(q)), None)
 
         if next_q:
-            st.markdown(f"**Question {questions_asked + 1}:**")
+            st.markdown(f"**{T("Question")} {questions_asked + 1}:**")
             displayed_question = f"{next_q.question} [{next_q.reasoning}]"
             answer = st.text_input(
                 displayed_question,
                 key=f"answer_{hash(next_q.question)}",
-                placeholder="Type your answer here..."
+                placeholder=T("Type your answer here")
             )
 
-            if st.button("✅ Submit Answer", key="consultation_submit_btn", use_container_width=True):
+            if st.button(T("Submit Answer"), key="consultation_submit_btn", use_container_width=True):
                 # Validate answer is not empty
                 if not answer or answer.strip() == "":
-                    st.warning("⚠️ Please provide an answer before submitting.")
+                    st.warning(T("Please provide an answer before submitting"))
                 else:
                     # Increment question counter
                     state["questions_asked"] = state.get("questions_asked", 0) + 1
@@ -1181,7 +1247,7 @@ def show_diagnosis_page():
             # Diagnosis complete
             st.markdown("---")
             if top_disease_confidence >= confidence_threshold:
-                st.success(f"✅ **Diagnosis Complete!** Achieved {top_disease_confidence:.1%} confidence")
+                st.success(f"✅ **Diagnosis Complete!** {T("Diagnosis Complete!")} Achieved {top_disease_confidence:.1%} confidence")
                 st.balloons()
             elif questions_asked >= max_questions:
                 st.info(f"📊 **Analysis Complete** - Maximum questions reached ({max_questions})")
@@ -1191,7 +1257,7 @@ def show_diagnosis_page():
                 st.info("✅ **Sufficient Information Collected**")
             
             # Show summary stats
-            st.markdown("### 📈 Consultation Summary")
+            st.markdown(T("Consultation Summary"))
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Questions", questions_asked)
@@ -1200,7 +1266,7 @@ def show_diagnosis_page():
             with col3:
                 st.metric("Diseases Analyzed", len(state["matches"]))
             
-            if st.button("🔄 Start New Consultation", use_container_width=True):
+            if st.button(T("Start New Consultation"), use_container_width=True):
                 # Clean up temp image file if exists
                 if state["image_path"]:
                     try:
@@ -1227,7 +1293,7 @@ def show_diagnosis_page():
                 st.rerun()
 
         # Diseases
-        st.markdown("### 🎯 Possible Diagnoses")
+        st.markdown(T("Possible Diagnoses"))
         matches = state["matches"]
         if matches:
             for disease in matches[:5]:
@@ -1238,18 +1304,18 @@ def show_diagnosis_page():
                 <span class="severity-badge {severity_class}">
                 {disease['severity']}
                 </span>
-                <p><strong>Scientific Name:</strong> {disease['scientific_name']}</p>
-                <p><strong>Description:</strong> {disease['description']}</p>
-                <p><strong>Treatment:</strong> {disease['treatment']}</p>
-                <p><strong>Prevention:</strong> {disease['prevention']}</p>
-                <p><strong>Affected Species:</strong> {', '.join(disease['affected_species'])}</p>
+                <p><strong>{T("Scientific Name")}:</strong> {disease['scientific_name']}</p>
+                <p><strong>{T("Description")}:</strong> {disease['description']}</p>
+                <p><strong>{T("Treatment")}:</strong> {disease['treatment']}</p>
+                <p><strong>{T("Prevention")}:</strong> {disease['prevention']}</p>
+                <p><strong>{T("Affected Species")}:</strong> {', '.join(disease['affected_species'])}</p>
                 </div>
                 """, unsafe_allow_html=True)
         else:
             st.warning("⚠️ No matching diseases found in database.")
 
         # Recommendations
-        st.markdown("### 💡 Recommendations")
+        st.markdown(T("Recommendations"))
         urgency = "routine"
         if matches:
             top_disease = matches[0]
@@ -1261,18 +1327,18 @@ def show_diagnosis_page():
             "severe": "🔴"
         }
         urgency_icon = urgency_colors.get(urgency, "🟡")
-        st.markdown(f"**Urgency Level:** {urgency_icon} {urgency.upper()}")
+        st.markdown(f"**{T('Urgency Level:')}** {urgency_icon} {urgency.upper()}")
         
-        st.markdown("**Recommended Actions:**")
+        st.markdown(f"**{T('Recommended Actions:')}**")
         if urgency == "severe":
-            st.markdown("- Seek immediate veterinary attention.")
-            st.markdown("- Monitor vital signs closely.")
+            st.markdown(T("Seek immediate veterinary attention."))
+            st.markdown(T("Monitor vital signs closely."))
         elif urgency == "moderate":
-            st.markdown("- Schedule a veterinary appointment within 24-48 hours.")
-            st.markdown("- Monitor for worsening symptoms.")
+            st.markdown(T("Schedule a veterinary appointment within 24-48 hours."))
+            st.markdown(T("Monitor for worsening symptoms."))
         else:
-            st.markdown("- Continue monitoring the patient at home.")
-            st.markdown("- Maintain current care routine.")
+            st.markdown(T("Continue monitoring the patient at home."))
+            st.markdown(T("Maintain current care routine."))
 
         # Independent semantic differential feature (does not modify primary diagnosis state)
         _render_semantic_diagnosis_feature(state)
@@ -1280,7 +1346,7 @@ def show_diagnosis_page():
 
 
 def show_database_page():
-    st.markdown("## 📚 Disease Database")
+    st.markdown(f"## {T('Disease Database')}")
 
     try:
         # Use get_db to access raw connection instead of undefined class
@@ -1289,9 +1355,9 @@ def show_database_page():
         # Search
         col1, col2 = st.columns([3, 1])
         with col1:
-            search_query = st.text_input("🔍 Search diseases", placeholder="Enter disease name or keyword...")
+            search_query = st.text_input(T("Search diseases"), placeholder=T("Enter disease name or keyword"))
         with col2:
-            severity_filter = st.selectbox("Severity", ["All", "mild", "moderate", "severe"])
+            severity_filter = st.selectbox(T("Severity"), [T("All"), T("mild"), T("moderate"), T("severe")])
 
         # Build query
         query = {}
@@ -1317,12 +1383,12 @@ def show_database_page():
             <div class="disease-card">
             <h4>{disease['name']}</h4>
             <span class="severity-badge {severity_class}">{disease['severity']}</span>
-            <p><strong>Scientific Name:</strong> {disease.get('scientific_name', 'N/A')}</p>
-            <p><strong>Description:</strong> {disease.get('description', 'N/A')}</p>
+            <p><strong>{T("Scientific Name")}:</strong> {disease.get('scientific_name', 'N/A')}</p>
+            <p><strong>{T("Description")}:</strong> {disease.get('description', 'N/A')}</p>
             <p><strong>Symptoms:</strong> {', '.join(disease.get('common_symptoms', []))}</p>
-            <p><strong>Treatment:</strong> {disease.get('treatment', 'N/A')}</p>
-            <p><strong>Prevention:</strong> {disease.get('prevention', 'N/A')}</p>
-            <p><strong>Affected Species:</strong> {', '.join(disease.get('affected_species', []))}</p>
+            <p><strong>{T("Treatment")}:</strong> {disease.get('treatment', 'N/A')}</p>
+            <p><strong>{T("Prevention")}:</strong> {disease.get('prevention', 'N/A')}</p>
+            <p><strong>{T("Affected Species")}:</strong> {', '.join(disease.get('affected_species', []))}</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -1331,7 +1397,7 @@ def show_database_page():
 
 
 def show_history_page():
-    st.markdown("## 📊 Analysis History")
+    st.markdown(f"{T('Analysis History')}")
 
     try:
         db = get_db()
@@ -1416,7 +1482,7 @@ def show_history_page():
                 "routine": "🟢"
             }
             urgency_icon = urgency_colors.get(urgency, "🟡")
-            st.markdown(f"**Urgency Level:** {urgency_icon} {urgency.upper()}")
+            st.markdown(f"**{T("Urgency Level:")}** {urgency_icon} {urgency.upper()}")
 
 
 def main():
