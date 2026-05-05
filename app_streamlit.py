@@ -981,7 +981,7 @@ def show_diagnosis_page():
                 state = st.session_state.consultation
                 state["patient_info"] = analysis["patient_analysis"].patient_info
                 state["symptoms"] = analysis["patient_analysis"].symptoms
-                state["diseases"] = analysis.get("disease_extractions", []) 
+                state["diseases"] = analysis["patient_analysis"].suspected_diseases
                 state["matches"] = analysis.get("database_matches", [])
                 state["answers"] = {}
                 state["questions_asked"] = 0
@@ -1257,7 +1257,7 @@ def show_diagnosis_page():
                             symptom_text,
                             generate_questions=False
                         )
-                        state["diseases"] = analysis.get("disease_extractions", [])
+                        state["diseases"] = analysis["patient_analysis"].suspected_diseases
                         state["matches"] = analysis.get("database_matches", [])
 
                     st.rerun()
