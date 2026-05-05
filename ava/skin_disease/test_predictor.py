@@ -1,7 +1,8 @@
-from predictor import predict_skin_disease
+from predictor import SkinDiseasePredictor
 
 print("Running skin disease inference test...")
 
-result = predict_skin_disease("test_image.jpeg")
+predictor = SkinDiseasePredictor()
+result = predictor.predict("../imaging/skin_disease/data/test/fungal/fung1.jpeg")
 
 print("Prediction result:", result)
