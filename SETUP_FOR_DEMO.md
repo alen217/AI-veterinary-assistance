@@ -31,14 +31,7 @@ python train.py
 cd ../..
 ```
 
-### 4. Setup Environment File
-Create a `.env` file in the root directory with:
-```env
-MONGO_URL=mongodb+srv://vetuser:ava12345@disease0.gikknuo.mongodb.net/veterinary_ai_db
-MONGO_DB_NAME=veterinary_ai_db
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=admin123
-```
+
 
 ### 4. Run Application
 ```bash
@@ -51,7 +44,7 @@ The app will open at: http://localhost:8501
 
 ### Login
 - Username: `admin` or `user`  
-- Password: `admin123` or `user123`
+
 
 ### Test the AI System
 1. **Go to Diagnosis page**
