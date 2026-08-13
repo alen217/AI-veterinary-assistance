@@ -246,7 +246,8 @@ class UserManager:
         return self.db.create_user(username, password, role)
 
     def delete_user(self, username: str) -> bool:
-        if username == os.getenv("ADMIN_USERNAME", "admin"):
+
+        if username ==  st.secrets.get("ADMIN_USERNAME", "admin"):
             return False
         result = self.db.users.delete_one({"username": username})
         return result.deleted_count == 1
@@ -709,8 +710,9 @@ def show_admin_panel():
         st.markdown("### ⚙️ System Settings")
 
         st.markdown("#### Database Configuration")
-        mongo_url = os.getenv('MONGO_URL', 'Not configured')
-        db_name = os.getenv('MONGO_DB_NAME', 'veterinary_ai_db')
+
+        mongo_url =st.secrets.get("MONGO_URL", "Not configured") 
+        db_name = st.secrets.get("MONGO_DB_NAME", "veterinary_ai_db")
 
         st.info(f"**Database:** {db_name}")
         st.info(f"**Connection:** {'✅ Configured' if mongo_url != 'Not configured' else '❌ Not configured'}")

@@ -15,7 +15,7 @@ load_dotenv(dotenv_path)
 MONGO_URL = os.getenv("MONGO_URL")
 DB_NAME = os.getenv("MONGO_DB_NAME", "veterinary_ai_db")
 
-
+ 
 class UserDatabase:
     def __init__(self):
         if not MONGO_URL:
